@@ -5,9 +5,14 @@ import numpy as np
 
 class PoseDetector:
 
-    ''' Класс детектора ключевых точек ПОЗЫ '''
+    ''' Класс детектора ключевых точек ПОЗЫ 
+    
+        Args:         
+            model_path (str): Путь к модели .task файлу
+            num_poses (int): Максимальное количество детектируемых лиц (default: 1)
+    '''
 
-    def __init__(self, model_path, name_detect=1):
+    def __init__(self, model_path, num_poses=1):
 
         ''' Инициализируем единожды настройки '''
 
@@ -21,7 +26,7 @@ class PoseDetector:
             running_mode=self.VisionRunningMode.IMAGE,
             min_pose_detection_confidence=0.5,
             min_tracking_confidence=0.5,
-            num_poses=name_detect
+            num_poses=num_poses
         )
 
         self.landmarker = self.PoseLandmarker.create_from_options(self.options)
