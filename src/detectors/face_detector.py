@@ -6,10 +6,14 @@ from .key_pointers import FACE
 
 
 class FaceDetector:
+    ''' Класс детектора ключевых точек ЛИЦА
+    
+        Args:
+            model_path (str): Путь к модели .task файлу
+            num_detect (int): Максимальное количество детектируемых лиц (default: 1)
+    '''
 
-    ''' Класс детектора ключевых точек ЛИЦА '''
-
-    def __init__(self, model_path, num_detect=1):
+    def __init__(self, model_path, num_faces=1):
         
         ''' Инициализируем единожды настройки '''
 
