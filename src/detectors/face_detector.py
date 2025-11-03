@@ -10,7 +10,7 @@ class FaceDetector:
     
         Args:
             model_path (str): Путь к модели .task файлу
-            num_detect (int): Максимальное количество детектируемых лиц (default: 1)
+            num_faces (int): Максимальное количество детектируемых лиц (default: 1)
     '''
 
     def __init__(self, model_path, num_faces=1):
@@ -30,7 +30,7 @@ class FaceDetector:
             min_tracking_confidence=0.5,
             output_face_blendshapes=False,
             output_facial_transformation_matrixes=False,
-            num_faces=num_detect
+            num_faces=num_faces
         )
 
         # создаем детектор
