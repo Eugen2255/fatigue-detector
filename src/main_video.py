@@ -19,8 +19,8 @@ cap = cv2.VideoCapture(0)
 face = FaceDetector(face_model_path, num_faces=2)
 # словарь предыдущих ключевых точек ЛИЦ (от 0 до num_faces-1) (каждый индекс соотвествует одному лицу)
 pred_faces_kps = dict()
-# сглаживать точки лица каждые SMOOTH_FACE_EXERY кадров
-SMOOTH_FACE_EXERY = 5
+# сглаживать точки лица каждые SMOOTH_FACE_EVERY кадров
+SMOOTH_FACE_EVERY = 5
 
 
 pose = PoseDetector(pose_model_path, num_poses=2)
