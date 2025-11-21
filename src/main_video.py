@@ -3,14 +3,14 @@ import numpy as np
 
 from detectors import *
 from exp_smoothing import exp_smoothing
-
+from metrics import *
+from config import pose_path, face_path
 
 ''' ФАЙЛ ДЛЯ ТЕСТОВ НА ВЕБ-КАМЕРЕ '''
 
-
 # пути к модели и изображению (добавьте ваши пути для тестов)
-pose_model_path = r'D:/Desktop/fatigue-detector/models/pose_landmarker_lite.task'
-face_model_path = r'D:/Desktop/fatigue-detector/models/face_landmarker.task'
+pose_model_path = pose_path
+face_model_path = face_path
 
 cap = cv2.VideoCapture(0)
 
@@ -84,7 +84,7 @@ while True:
             for x,y in smooth_one_pose:
                 cv2.circle(img, (x, y), 3, (255, 0, 0), -1)
 
-    
+    detect_rubbing(faces_kps, poses_kps)
 
     cv2.imshow("result image", img)
 
