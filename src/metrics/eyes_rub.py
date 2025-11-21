@@ -4,18 +4,14 @@ from detectors.key_pointers import FACE
 def detect_rubbing(face_kp: np.ndarray, pose_kp: np.ndarray,
                    verbose: bool = False) -> bool:
     """
-    Detects if a person is rubbing their eyes by checking proximity between hand and eye keypoints.
-    
+    Определяет потирает ли человек глаза. Считаем минимальное растояние от точек руки до точек глаз
     Args:
-        face_kp: numpy array of face keypoints with shape 
-        pose_kp: numpy array of pose keypoints with shape
-        verbose: if True, prints debug information (default: False)
+        face_kp: numpy array точек головы
+        pose_kp: numpy array точек туловища(без точек головы)
+        verbose: если True, печатаем дополнительную информацию (по умолчанию: False)
     
     Returns:
-        bool: True if eye rubbing is detected, False otherwise
-    
-    Raises:
-        ValueError: If input arrays have incompatible shapes
+        bool: True если есть потирания, иначе False 
     """
 
     if (face_kp is None or pose_kp is None or 
