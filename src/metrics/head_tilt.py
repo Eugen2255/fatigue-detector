@@ -26,13 +26,13 @@ def detect_head_tilt(face_kp: np.ndarray, pose_kp: np.ndarray,
         return None
     
     try:
-        nose_idx = 90
+        nose_idx = 88
         l_shoulder_idx = 0
         r_shoulder_idx = 1
 
-        nose = face_kp[0][nose_idx]
-        l_sh = pose_kp[0][l_shoulder_idx]
-        r_sh = pose_kp[0][r_shoulder_idx]
+        nose = face_kp[nose_idx]
+        l_sh = pose_kp[l_shoulder_idx]
+        r_sh = pose_kp[r_shoulder_idx]
 
         # Центр плеч
         cx = (l_sh[0] + r_sh[0]) / 2
