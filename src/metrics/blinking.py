@@ -1,10 +1,9 @@
 import numpy as np
 from numpy.linalg import norm
-import mediapipe as mp
-import cv2
 
-RIGHT_EAR_POINTS = [33, 160, 158, 133, 153, 144]
-LEFT_EAR_POINTS = [362, 385, 387, 263, 373, 380]
+
+RIGHT_EAR_POINTS = [0, 3, 5, 8, 11, 13]
+LEFT_EAR_POINTS = [16, 19, 21, 24, 27, 29]
 
 
 def _compute_ear(eye, verbose=False):
@@ -66,10 +65,8 @@ def detect_blink(face_kp: np.ndarray,
         return None
 
     try:
-        points = face_kp[0]  #(N, 2)
-
-        left_eye = points[LEFT_EAR_POINTS]
-        right_eye = points[RIGHT_EAR_POINTS]
+        left_eye = face_kp[LEFT_EAR_POINTS]
+        right_eye = face_kp[RIGHT_EAR_POINTS]
 
         ear_left = _compute_ear(left_eye, verbose)
         ear_right = _compute_ear(right_eye, verbose)

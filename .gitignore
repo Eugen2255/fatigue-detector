@@ -3,3 +3,5 @@ __pycache__
 models
 venv
 config.py
+final_report.json
+collected_metrics
