@@ -1,0 +1,9 @@
+blink:
+  ear_threshold: 0.22  # Можно повысить для тусклого освещения
+rubbing:
+  distance_threshold_px: 40.0
+head_tilt:
+  mild_tilt_deg: 8.0
+  severe_tilt_deg: 30.0
+smoothing_alpha: 0.25
+fps_target: 30

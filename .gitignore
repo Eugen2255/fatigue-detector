@@ -1,7 +1,6 @@
 __pycache__
 .vscode
-models
 venv
-config.py
+.venv
 final_report.json
 collected_metrics

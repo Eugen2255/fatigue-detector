@@ -1,8 +1,5 @@
-from .eyes_rub import detect_rubbing
-from .head_tilt import detect_head_tilt
-from .blinking import detect_blink
+from .eyes_rub import RubbingMetric
+from .head_tilt import HeadTiltMetric
+from .blinking import BlinkMetric
 
-__version__ = '0.0.3'
-
-# from detectors import *
-__all__ = ['detect_rubbing', 'detect_head_tilt', 'detect_blink']
+__all__ = ['RubbingMetric', 'HeadTiltMetric', 'BlinkMetric']
