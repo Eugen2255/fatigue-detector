@@ -1,159 +1,120 @@
-import pandas as pd
-from datetime import datetime
-from typing import Optional, Tuple, Dict, Any
-import json
-import os
+"""Сборщик метрик для real-time обработки."""
+import logging
+import numpy as np
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class FrameRecord:
+    frame: int
+    blink: int
+    rubbing: bool
+    head_tilt_state: int
+    head_tilt_angle: Optional[float]
+    face_detected: bool
+    pose_detected: bool
 
 class MetricsCollector:
-    """Класс для сбора и хранения метрик"""
-    
-    def __init__(self, save_interval: int = 100, save_path: str = "metrics_data"):
-        """
-        Args:
-            save_interval: интервал сохранения данных (в кадрах)
-            save_path: путь для сохранения данных
-        """
-        self.save_interval = save_interval
-        self.save_path = save_path
-        
-        # Инициализация счетчиков
+    def __init__(self, fps: float = 30.0):
+        self.fps = fps
+        self._history: List[FrameRecord] = []
+        self._reset_counters()
+
+    def _reset_counters(self):
         self.total_blinks = 0
         self.total_rubbing = 0
-        self.total_head_tilt_light = 0
-        self.total_head_tilt_heavy = 0
+        self.total_tilt_light = 0
+        self.total_tilt_heavy = 0
+
+    def add_frame(
+        self, 
+        frame_idx: int, 
+        blink: Optional[int] = None, 
+        rubbing: Optional[bool] = None,
+        head_tilt_state: Optional[int] = None, 
+        head_tilt_angle: Optional[float] = None,
+        face_kps: Optional[np.ndarray] = None, 
+        pose_kps: Optional[np.ndarray] = None
+    ):
+        """Добавляет запись о кадре. Безопасно обрабатывает None от метрик."""
         
-        # Хранение всех метрик
-        self.metrics_history = []
-        self.current_frame_metrics = {}
+        # === Безопасное приведение типов ===
+        blink_val = 1 if blink == 1 else 0
+        rubbing_val = rubbing is True
+        tilt_state_val = head_tilt_state if head_tilt_state in (1, 2) else 0
         
-        # Создаем директорию для сохранения, если её нет
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-    
-    def collect_frame_metrics(
-        self,
-        frame_num: int,
-        head_tilt_result: Optional[Tuple[float, int]] = None,
-        blink_result: int = 0,
-        rubbing_result: bool = False,
-        face_kps: Optional[list] = None,
-        pose_kps: Optional[list] = None
-    ) -> pd.Series:
-        """
-        Собирает метрики для текущего кадра.
-        
-        Returns:
-            pd.Series: метрики текущего кадра
-        """
-        # Инициализация значений для текущего кадра
-        blink_current = 1 if blink_result == 1 else 0
-        rubbing_current = 1 if rubbing_result else 0
-        head_tilt_state = 0
-        head_tilt_angle = None
-        
-        # Обработка наклона головы
-        if head_tilt_result is not None:
-            angle_deg, state = head_tilt_result
-            head_tilt_state = state
-            head_tilt_angle = angle_deg
-            
-            # Обновление счетчиков
-            if state == 1:
-                self.total_head_tilt_light += 1
-            elif state == 2:
-                self.total_head_tilt_heavy += 1
-        
-        # Обновление счетчиков
-        self.total_blinks += blink_current
-        self.total_rubbing += rubbing_current
-        
-        # Создание Series с метриками
-        metrics_dict = {
-            'frame': frame_num,
-            'timestamp': datetime.now().strftime('%H:%M:%S.%f')[:-3],
-            'blink_current': blink_current,
-            'blink_total': self.total_blinks,
-            'rubbing_current': rubbing_current,
-            'rubbing_total': self.total_rubbing,
-            'head_tilt_state': head_tilt_state,
-            'head_tilt_angle': head_tilt_angle,
-            'head_tilt_light_total': self.total_head_tilt_light,
-            'head_tilt_heavy_total': self.total_head_tilt_heavy,
-            'head_tilt_total': self.total_head_tilt_light + self.total_head_tilt_heavy,
-            'face_detected': 0 if face_kps is None else len(face_kps),
-            'pose_detected': 0 if pose_kps is None else len(pose_kps),
-        }
-        
-        # Сохраняем метрики текущего кадра
-        self.current_frame_metrics = metrics_dict.copy()
-        
-        # Добавляем в историю
-        metrics_series = pd.Series(metrics_dict)
-        self.metrics_history.append(metrics_series)
-        
-        return metrics_series
-    
-    def get_current_metrics(self) -> Dict[str, Any]:
-        """Возвращает метрики текущего кадра"""
-        return self.current_frame_metrics
-    
+        is_face = face_kps is not None and face_kps.size > 0
+        is_pose = pose_kps is not None and pose_kps.size > 0
+
+        # === Обновление счётчиков ===
+        self.total_blinks += blink_val
+        if rubbing_val:
+            self.total_rubbing += 1
+        if tilt_state_val == 1:
+            self.total_tilt_light += 1
+        elif tilt_state_val == 2:
+            self.total_tilt_heavy += 1
+
+        # === Сохранение в историю ===
+        self._history.append(FrameRecord(
+            frame=frame_idx, 
+            blink=blink_val, 
+            rubbing=rubbing_val,
+            head_tilt_state=tilt_state_val, 
+            head_tilt_angle=head_tilt_angle,
+            face_detected=is_face, 
+            pose_detected=is_pose
+        ))
+
+    def to_dataframe(self):
+        """Конвертирует историю в DataFrame ТОЛЬКО когда нужен анализ."""
+        import pandas as pd
+        if not self._history:
+            return pd.DataFrame()
+        return pd.DataFrame([vars(r) for r in self._history])
+
     def get_summary(self) -> Dict[str, Any]:
-        """Возвращает сводку по всем метрикам"""
-        if not self.metrics_history:
-            return {}
+        total_frames = len(self._history)
+        if total_frames == 0: return {}
         
-        # Создаем DataFrame из истории
-        df = pd.DataFrame(self.metrics_history)
-        
-        summary = {
-            'total_frames': len(df),
-            'total_blinks': self.total_blinks,
-            'blink_rate_per_min': self._calculate_blink_rate(df),
-            'total_rubbing': self.total_rubbing,
-            'rubbing_percentage': (self.total_rubbing / len(df) * 100) if len(df) > 0 else 0,
-            'head_tilt_light': self.total_head_tilt_light,
-            'head_tilt_heavy': self.total_head_tilt_heavy,
-            'head_tilt_total': self.total_head_tilt_light + self.total_head_tilt_heavy,
-            'head_tilt_percentage': ((self.total_head_tilt_light + self.total_head_tilt_heavy) / len(df) * 100) if len(df) > 0 else 0,
+        return {
+            "total_frames": total_frames,
+            "duration_sec": total_frames / self.fps,
+            "total_blinks": self.total_blinks,
+            "blink_rate_per_min": (self.total_blinks / (total_frames / self.fps)) * 60,
+            "rubbing_frames": self.total_rubbing,
+            "rubbing_pct": (self.total_rubbing / total_frames) * 100,
+            "tilt_light": self.total_tilt_light,
+            "tilt_heavy": self.total_tilt_heavy,
+            "tilt_pct": ((self.total_tilt_light + self.total_tilt_heavy) / total_frames) * 100
         }
-        
-        return summary
-    
-    def _calculate_blink_rate(self, df: pd.DataFrame) -> float:
-        """Рассчитывает частоту морганий в минуту"""
-        if len(df) < 2:
-            return 0
-        
-        # Предполагаем 30 FPS для расчета времени
-        total_seconds = len(df) / 30
-        if total_seconds > 0:
-            return (self.total_blinks / total_seconds) * 60
-        return 0
-    
-    def save_current_data(self):
-        """Сохраняет текущие данные в файл"""
-        if not self.metrics_history:
+
+    def save(self, base_path: str):
+        """Сохраняет все данные ОДНИМ файлом по завершении сессии."""
+        import pandas as pd
+        import json
+        import os
+
+        df = self.to_dataframe()
+        if df.empty:
+            logger.warning("Нет данных для сохранения")
             return
+
+        os.makedirs(base_path, exist_ok=True)
         
-        df = pd.DataFrame(self.metrics_history)
-        
-        # Сохраняем как CSV
-        csv_path = os.path.join(self.save_path, f"metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        # CSV с метриками
+        csv_path = os.path.join(base_path, "metrics.csv")
         df.to_csv(csv_path, index=False)
         
-        # Сохраняем сводку как JSON
-        summary = self.get_summary()
-        json_path = os.path.join(self.save_path, f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        with open(json_path, 'w') as f:
-            json.dump(summary, f, indent=2)
-        
-        print(f"Данные сохранены: {csv_path}")
-    
+        # JSON со сводкой
+        summary_path = os.path.join(base_path, "summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(self.get_summary(), f, indent=2)
+            
+        logger.info(f"Данные сохранены: {csv_path}, {summary_path}")
+
     def reset(self):
-        """Сброс всех счетчиков"""
-        self.total_blinks = 0
-        self.total_rubbing = 0
-        self.total_head_tilt_light = 0
-        self.total_head_tilt_heavy = 0
-        self.metrics_history = []
-        self.current_frame_metrics = {}
+        self._history.clear()
+        self._reset_counters()

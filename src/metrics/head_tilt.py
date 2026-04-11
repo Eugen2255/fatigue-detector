@@ -1,72 +1,61 @@
+"""Детекция наклона головы относительно линии плеч."""
+import logging
 import numpy as np
+from typing import Optional, Dict, Any
+from .base_metric import BaseFatigueMetric
 
-def detect_head_tilt(face_kp: np.ndarray, pose_kp: np.ndarray,
-                     verbose: bool = False):
-    """
-    Определение наклона головы на основе расстояния между головой и плечами.
-    Аргументы:
-        face_kp: numpy array точек головы (shape: (1, N_face_points, 2))
-        pose_kp: numpy array точек позы (shape: (1, N_pose_points, 2))
-        verbose: печать отладочной информации
-        
-    Возвращает:
-        tuple(angle_deg: float, state: int)
-        где:
-            state = 0 → наклон < 10°
-            state = 1 → 10°–35°
-            state = 2 → > 35°
-        или None в случае ошибки
-    """
+logger = logging.getLogger(__name__)
 
-    # Проверки входа
-    if (face_kp is None or pose_kp is None 
-        or len(face_kp) == 0 or len(pose_kp) == 0):
-        if verbose:
-            print("Пустой ввод ключевых точек, браток :)")
-        return None
-    
-    try:
-        nose_idx = 88
-        l_shoulder_idx = 0
-        r_shoulder_idx = 1
+# Индексы относительно ваших массивов key pointers
+NOSE_IDX = 88               # Убедитесь, что соответствует точке носа в FACE
+L_SHOULDER_IDX = 0          # MP 11 -> локальный 0 в pose_kp
+R_SHOULDER_IDX = 1          # MP 12 -> локальный 1 в pose_kp
 
-        nose = face_kp[nose_idx]
-        l_sh = pose_kp[l_shoulder_idx]
-        r_sh = pose_kp[r_shoulder_idx]
 
-        # Центр плеч
-        cx = (l_sh[0] + r_sh[0]) / 2
-        cy = (l_sh[1] + r_sh[1]) / 2
+class HeadTiltMetric(BaseFatigueMetric):
+    def __init__(self, name: str, config: Dict[str, Any], smoothing_alpha: float = 0.3):
+        super().__init__(name, config, smoothing_alpha)
 
-        # Вектор от центра плеч к голове
-        dx = nose[0] - cx
-        dy = cy - nose[1]   # направление вверх
-
-        # Защита от нулевого вектора
-        if dx == 0 and dy == 0:
-            if verbose:
-                print("Нулевой вектор: голова и плечи сжаты")
+    def _compute_raw(self, face_kp: Optional[np.ndarray], pose_kp: Optional[np.ndarray]) -> Optional[float]:
+        """Возвращает угол отклонения головы от вертикали в градусах."""
+        if face_kp is None or pose_kp is None or face_kp.size == 0 or pose_kp.size == 0:
             return None
 
-        # Угол наклона головы
-        angle_rad = np.arctan2(dx, dy)
-        angle_deg = abs(np.degrees(angle_rad))
+        try:
+            face_pts = face_kp[0] if face_kp.ndim == 3 else face_kp
+            pose_pts = pose_kp[0] if pose_kp.ndim == 3 else pose_kp
 
-        # Состояние
-        if angle_deg < 10:
-            state = 0
-        elif angle_deg < 35:
-            state = 1
-        else:
-            state = 2
+            # Проверка границ массивов
+            if not (0 <= NOSE_IDX < len(face_pts)):
+                return None
+            if not (0 <= L_SHOULDER_IDX < len(pose_pts)) or not (0 <= R_SHOULDER_IDX < len(pose_pts)):
+                return None
 
-        if verbose:
-            print(f"Angle: {angle_deg:.2f}°  State: {state}")
+            nose = face_pts[NOSE_IDX]
+            l_sh = pose_pts[L_SHOULDER_IDX]
+            r_sh = pose_pts[R_SHOULDER_IDX]
 
-        return angle_deg, state
+            shoulder_center = (l_sh + r_sh) / 2.0
+            vec = nose - shoulder_center
 
-    except Exception as e:
-        if verbose:
-            print(f"Вышла ошибочка :) : {e}")
-        return None
+            if np.linalg.norm(vec) < 1e-6:
+                return None
 
+            # Угол относительно вертикали. В пикселях Y направлен вниз, поэтому -vec[1]
+            angle_rad = np.arctan2(vec[0], -vec[1])
+            return float(abs(np.degrees(angle_rad)))
+
+        except Exception as e:
+            logger.error(f"Ошибка вычисления угла в HeadTiltMetric: {e}", exc_info=True)
+            return None
+
+    def _map_to_state(self, raw: float, smoothed: float) -> int:
+        """Классификация угла на 3 уровня строгости."""
+        mild = self.config.get("mild_tilt_deg", 10.0)
+        severe = self.config.get("severe_tilt_deg", 35.0)
+
+        if smoothed < mild:
+            return 0  # Норма
+        elif smoothed < severe:
+            return 1  # Умеренный наклон
+        return 2       # Сильный наклон

@@ -1,90 +1,30 @@
 import numpy as np
 from numpy.linalg import norm
-
+from typing import Optional
+from .base_metric import BaseFatigueMetric
 
 RIGHT_EAR_POINTS = [0, 3, 5, 8, 11, 13]
 LEFT_EAR_POINTS = [16, 19, 21, 24, 27, 29]
 
+class BlinkMetric(BaseFatigueMetric):
+    def _compute_raw(self, face_kp: Optional[np.ndarray], pose_kp: Optional[np.ndarray]) -> Optional[float]:
+        if face_kp is None or face_kp.size == 0:
+            return None
+        pts = face_kp[0] if face_kp.ndim == 3 else face_kp
 
-def _compute_ear(eye, verbose=False):
-    """
-    Специально для данечки :) ну и евгения точно :)
-    Вычисляем EAR (Eye Aspect Ratio) для одного глаза EAR крч — это коэффициент раскрытия глаза, определяемый как отношение сумм
-    вертикальных расстояний между веками к горизонтальной ширине глаза:
+        ear_l = self._ear(pts[LEFT_EAR_POINTS])
+        ear_r = self._ear(pts[RIGHT_EAR_POINTS])
+        if ear_l is None or ear_r is None:
+            return None
+        return (ear_l + ear_r) / 2.0
 
-    EAR = ((p2 - p6) + (p3 - p5)) / (2 * (p1 - p4))
-    Где p1–p6 - заранее определённые ключевые точки глаза
+    def _map_to_state(self, raw: float, smoothed: float) -> int:
+        return 1 if smoothed < self.config["ear_threshold"] else 0
 
-    eye (np.ndarray): массив shape (6, 2) с координатами шести точек глаза
-    verbose (bool): печать отладочных значений расстояний и EAR
-    """
-    try:
+    @staticmethod
+    def _ear(eye: np.ndarray) -> Optional[float]:
+        if eye.shape != (6, 2): return None
         p1, p2, p3, p4, p5, p6 = eye
-
-        v1 = norm(p2 - p6) # первая вертикаль
-        v2 = norm(p3 - p5) # вторая вертикаль
-        h  = norm(p1 - p4) # горизонталь
-
-        if h == 0:
-            return None
-
-        ear = (v1 + v2) / (2.0 * h)
-
-        if verbose:
-            print(f"v1={v1:.4f}, v2={v2:.4f}, h={h:.4f}, EAR={ear:.4f}")
-        return ear
-    
-    except:
-        return None
-
-def detect_blink(face_kp: np.ndarray,
-                 ear_threshold: float = 0.18,
-                 verbose: bool = False):
-    """
-    Снова специально для данечки :) ну и евгения точно :)
-    Детектор моргания на основе EAR
-
-        1)Извлекаем точки левого и правого глаз
-        2)Вычисляем EAR для каждого глаза
-        3)Находим среднее EAR
-        4)Сравниваем EAR со статическим порогом (обычно ~0.18(так надо)) Если EAR ниже порога, то ок, глаз считается закрытым
-
-        face_kp (np.ndarray):
-            Массив ключевых точек лица вида (1, N_points, 2),
-            где N_points ≥ максимальный индекс используемых точек MediaPipe
-        ear_threshold (float):
-            Порог закрытого глаза, EAR < threshold, то омг глаз закрыт
-
-            0 — глаза открыты  
-            1 — глаза закрыты (моргание)  
-    """
-
-    if face_kp is None or len(face_kp) == 0:
-        if verbose:
-            print("Нет face_kп")
-        return None
-
-    try:
-        left_eye = face_kp[LEFT_EAR_POINTS]
-        right_eye = face_kp[RIGHT_EAR_POINTS]
-
-        ear_left = _compute_ear(left_eye, verbose)
-        ear_right = _compute_ear(right_eye, verbose)
-
-        if ear_left is None or ear_right is None:
-            if verbose:
-                print("EAR невозможно вычислить")
-            return None
-
-        ear_avg = (ear_left + ear_right) / 2
-        state = 1 if ear_avg < ear_threshold else 0
-
-        if verbose:
-            print(f"State={state}")
-
-        return state
-
-    except Exception as e:
-        if verbose:
-            print("Ошибка в detect_blink:", e)
-        return None
+        h = norm(p1 - p4)
+        if h < 1e-6: return 0.0
+        return (norm(p2 - p6) + norm(p3 - p5)) / (2.0 * h)

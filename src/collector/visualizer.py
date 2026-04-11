@@ -1,127 +1,79 @@
+"""Визуализация метрик поверх кадра."""
 import cv2
 import numpy as np
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class MetricsVisualizer:
-    """Класс для визуализации метрик на видеокадре"""
+    # Константы вынесены для быстрого изменения
+    POS_METRICS = (15, 30)
+    POS_SUMMARY = (400, 30)
+    FONT = cv2.FONT_HERSHEY_SIMPLEX
+    SCALE = 0.55
+    THICK = 1
+    LINE_H = 22
     
-    def __init__(self, position: tuple = (10, 30)):
-        """
-        Args:
-            position: (x, y) координаты начала отображения метрик
-        """
-        self.position = position
-        self.font = cv2.FONT_HERSHEY_SIMPLEX
-        self.font_scale = 0.6
-        self.text_color = (0, 255, 0)  # Зеленый
-        self.warning_color = (0, 0, 255)  # Красный
-        self.info_color = (255, 255, 0)  # Голубой
-        self.thickness = 1
-        self.line_height = 25
-        
-    def draw_metrics(self, img: np.ndarray, metrics: Dict[str, Any]) -> np.ndarray:
-        """
-        Рисует метрики на кадре.
-        
-        Args:
-            img: входное изображение
-            metrics: словарь с метриками
-            
-        Returns:
-            Изображение с нарисованными метриками
-        """
-        x, y = self.position
-        
-        # Основные метрики
-        main_metrics = {
-            'Frame': metrics.get('frame', 0),
-            'Blinks': f"{metrics.get('blink_total', 0)} (current: {metrics.get('blink_current', 0)})",
-            'Rubbing': f"{metrics.get('rubbing_total', 0)} (current: {metrics.get('rubbing_current', 0)})",
-            'Head tilt': self._get_head_tilt_text(metrics),
-        }
-        
-        # Отображение основных метрик
-        for i, (key, value) in enumerate(main_metrics.items()):
-            y_pos = y + i * self.line_height
-            cv2.putText(img, f"{key}: {value}", (x, y_pos), 
-                       self.font, self.font_scale, self.text_color, 
-                       self.thickness, cv2.LINE_AA)
-        
-        # Отображение предупреждений
-        warning_start_y = y + len(main_metrics) * self.line_height + 10
-        warning_lines = self._get_warnings(metrics)
-        
-        for i, warning in enumerate(warning_lines):
-            y_pos = warning_start_y + i * self.line_height
-            cv2.putText(img, warning, (x, y_pos), 
-                       self.font, self.font_scale, self.warning_color, 
-                       self.thickness + 1, cv2.LINE_AA)
-        
-        # Отображение дополнительной информации
-        info_start_y = warning_start_y + len(warning_lines) * self.line_height + 10
-        if metrics.get('head_tilt_angle') is not None:
-            angle_text = f"Angle: {metrics['head_tilt_angle']:.1f}°"
-            cv2.putText(img, angle_text, (x, info_start_y), 
-                       self.font, self.font_scale - 0.1, self.info_color, 
-                       self.thickness, cv2.LINE_AA)
-        
-        return img
-    
-    def _get_head_tilt_text(self, metrics: Dict[str, Any]) -> str:
-        """Форматирует текст для наклона головы"""
-        state = metrics.get('head_tilt_state', 0)
-        state_text = {0: "Normal", 1: "Light", 2: "Heavy"}.get(state, "Unknown")
-        return f"{state_text} (total: {metrics.get('head_tilt_total', 0)})"
-    
-    def _get_warnings(self, metrics: Dict[str, Any]) -> list:
-        """Возвращает список предупреждений"""
+    COLORS = {
+        "ok": (0, 255, 0),
+        "warn": (0, 0, 255),
+        "info": (255, 255, 0),
+        "text": (220, 220, 220)
+    }
+
+    def draw(self, frame: np.ndarray, current: Dict[str, Any], 
+             summary: Optional[Dict[str, Any]] = None) -> np.ndarray:
+        """Рисует метрики и предупреждения. Модифицирует кадр in-place."""
+        h, w, _ = frame.shape
+        x, y = self.POS_METRICS
+
+        # 1. Основные метрики (всегда актуальные)
+        lines = [
+            f"Frame: {current.get('frame', 0)}",
+            f"Blinks: {current.get('blink_total', 0)}",
+            f"Rubbing: {'ACTIVE' if current.get('rubbing_current') else 'OK'}",
+            f"Tilt: {self._tilt_label(current)}"
+        ]
+        for i, txt in enumerate(lines):
+            cv2.putText(frame, txt, (x, y + i * self.LINE_H),
+                        self.FONT, self.SCALE, self.COLORS["text"], self.THICK, cv2.LINE_AA)
+
+        # 2. Предупреждения (только аномалии, без спама от морганий)
+        warnings = self._get_active_warnings(current)
+        if warnings:
+            warn_y = y + len(lines) * self.LINE_H + 15
+            for i, txt in enumerate(warnings):
+                cv2.putText(frame, f"⚠ {txt}", (x, warn_y + i * self.LINE_H),
+                            self.FONT, self.SCALE, self.COLORS["warn"], self.THICK + 1, cv2.LINE_AA)
+
+        # 3. Сводка (правый верхний угол)
+        if summary:
+            self._draw_summary(frame, summary, self.POS_SUMMARY)
+
+        return frame
+
+    def _tilt_label(self, m: Dict[str, Any]) -> str:
+        state = m.get("head_tilt_state", 0)
+        labels = {0: "Normal", 1: "Light", 2: "Heavy"}
+        return f"{labels.get(state, 'Err')} (total: {m.get('head_tilt_total', 0)})"
+
+    def _get_active_warnings(self, m: Dict[str, Any]) -> list:
         warnings = []
-        
-        if metrics.get('head_tilt_state') == 2:
-            warnings.append("WARNING: Heavy head tilt!")
-        
-        if metrics.get('rubbing_current') == 1:
-            warnings.append("Rubbing detected!")
-        
-        if metrics.get('blink_current') == 1:
-            warnings.append("Blink detected!")
-        
+        if m.get("head_tilt_state") == 2: warnings.append("Heavy Head Tilt")
+        if m.get("rubbing_current"): warnings.append("Eye Rubbing")
         return warnings
-    
-    def draw_summary(self, img: np.ndarray, summary: Dict[str, Any], position: tuple = (400, 30)) -> np.ndarray:
-        """
-        Рисует сводку метрик на кадре.
+
+    def _draw_summary(self, frame: np.ndarray, summary: Dict[str, Any], pos: tuple):
+        x, y = pos
+        cv2.putText(frame, "SUMMARY:", (x, y), self.FONT, self.SCALE, self.COLORS["info"], self.THICK + 1, cv2.LINE_AA)
         
-        Args:
-            img: входное изображение
-            summary: словарь со сводкой
-            position: (x, y) координаты
-            
-        Returns:
-            Изображение со сводкой
-        """
-        if not summary:
-            return img
-        
-        x, y = position
-        
-        # Заголовок
-        cv2.putText(img, "SUMMARY:", (x, y), self.font, 
-                   self.font_scale, self.text_color, self.thickness + 1, cv2.LINE_AA)
-        
-        # Ключевые метрики для сводки
-        summary_metrics = {
-            'Total frames': summary.get('total_frames', 0),
-            'Blink rate/min': f"{summary.get('blink_rate_per_min', 0):.1f}",
-            'Rubbing %': f"{summary.get('rubbing_percentage', 0):.1f}%",
-            'Head tilt %': f"{summary.get('head_tilt_percentage', 0):.1f}%",
-        }
-        
-        # Отображение сводки
-        for i, (key, value) in enumerate(summary_metrics.items()):
-            y_pos = y + (i + 1) * self.line_height
-            cv2.putText(img, f"{key}: {value}", (x, y_pos), 
-                       self.font, self.font_scale - 0.1, (200, 200, 0), 
-                       self.thickness, cv2.LINE_AA)
-        
-        return img
+        summary_lines = [
+            f"Duration: {summary.get('duration_sec', 0):.1f}s",
+            f"Blink Rate: {summary.get('blink_rate_per_min', 0):.1f}/min",
+            f"Rubbing: {summary.get('rubbing_pct', 0):.1f}%",
+            f"Tilt: {summary.get('tilt_pct', 0):.1f}%"
+        ]
+        for i, txt in enumerate(summary_lines):
+            cv2.putText(frame, txt, (x, y + (i + 1) * self.LINE_H),
+                        self.FONT, self.SCALE - 0.05, self.COLORS["text"], self.THICK, cv2.LINE_AA)
