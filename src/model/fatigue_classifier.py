@@ -70,11 +70,6 @@ class FatigueClassifier:
     def predict_from_window(self, window: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         """
         Предсказывает уровень усталости по окну метрик.
-        
-        Args:
-            window: DataFrame с метриками за последние N кадров.
-        Returns:
-            (prediction, probabilities) — класс и распределение вероятностей.
         """
         if not self._is_loaded:
             raise RuntimeError("Модель не загружена. Вызовите load() перед predict.")
@@ -82,18 +77,18 @@ class FatigueClassifier:
         # 1. Извлекаем признаки
         features = self.feature_extractor.extract(window)
         
-        # 2. Формируем вектор в правильном порядке
-        X = np.array([[features[f] for f in self.cfg.expected_features]])
+        # 2. Формируем DataFrame с правильными именами колонок (ИСПРАВЛЕНИЕ)
+        # Создаем DataFrame с одной строкой, где колонки называются так же, как при обучении
+        X = pd.DataFrame([features], columns=self.cfg.expected_features)
         
-        # 3. Масштабируем
-        X_scaled = self.scaler.transform(X) if self.scaler is not None else X
+        # 3. Масштабируем (теперь warning исчезнет, так как имена совпадают)
+        X_scaled = self.scaler.transform(X)
         
         # 4. Предсказываем
         prediction = self.model.predict(X_scaled)
         probabilities = self.model.predict_proba(X_scaled)
         
         return prediction, probabilities
-    
     def predict_from_dict(self, features: Dict[str, float]) -> Tuple[np.ndarray, np.ndarray]:
         """
         Предсказывает по готовому словарю признаков (для тестов или API).
