@@ -19,6 +19,7 @@ class MetricsAnalyzer:
             "blinks": self._analyze_blinks(df),
             "rubbing": self._analyze_rubbing(df),
             "head_tilt": self._analyze_head_tilt(df),
+            "input": self._analyze_input(df),
         }
 
     def _analyze_blinks(self, df: pd.DataFrame) -> Dict[str, Any]:
@@ -63,4 +64,17 @@ class MetricsAnalyzer:
             "heavy": int((df["head_tilt_state"] == 2).sum()),
             "avg_angle": float(angles.mean()) if not angles.empty else None,
             "max_angle": float(angles.max()) if not angles.empty else None
+        }
+
+    def _analyze_input(self, df: pd.DataFrame) -> Dict[str, Any]:
+        if "key_presses" not in df.columns:
+            return {}
+
+        return {
+            "key_press_total": int(df["key_presses"].sum()),
+            "key_press_rate_per_min": float(df["key_presses"].sum() / len(df) * self.fps * 60.0),
+            "mouse_click_total": int(df["mouse_clicks"].sum()) if "mouse_clicks" in df.columns else 0,
+            "mouse_click_rate_per_min": float(df["mouse_clicks"].sum() / len(df) * self.fps * 60.0) if "mouse_clicks" in df.columns else 0.0,
+            "mouse_distance_px_total": float(df["mouse_distance_px"].sum()) if "mouse_distance_px" in df.columns else 0.0,
+            "idle_pct": float((df["idle_ms"] >= 2000.0).mean() * 100.0) if "idle_ms" in df.columns else 0.0,
         }
