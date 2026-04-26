@@ -4,3 +4,4 @@ venv
 .venv
 final_report.json
 collected_metrics
+dist

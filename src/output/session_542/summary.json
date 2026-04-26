@@ -1,0 +1,14 @@
+{
+  "total_frames": 542,
+  "duration_sec": 18.066666666666666,
+  "total_blinks": 11,
+  "blink_rate_per_min": 36.53136531365313,
+  "perclos_pct": 43.91143911439114,
+  "rubbing_frames": 2,
+  "rubbing_pct": 0.36900369003690037,
+  "tilt_light": 100,
+  "tilt_heavy": 0,
+  "tilt_pct": 18.45018450184502,
+  "yawn_count": 0,
+  "yawn_pct": 0.0
+}

@@ -1,0 +1,51 @@
+--- FILE: metrics/yawning.py ---
+import numpy as np
+from typing import Optional
+from .base_metric import BaseFatigueMetric
+
+TOP_LIP = 13
+BOTTOM_LIP = 14
+LEFT_CORNER = 78
+RIGHT_CORNER = 308
+
+class YawnMetric(BaseFatigueMetric):
+    def __init__(self, name: str, config: dict, smoothing_alpha: float = 0.3):
+        super().__init__(name, config, smoothing_alpha)
+        self._open_frames = 0
+        self._min_duration = config.get("min_duration_frames", 15)
+        self._threshold = config.get("mar_threshold", 0.55)
+        self._yawn_counted = False
+
+    def _compute_raw(self, face_kp: Optional[np.ndarray], pose_kp: Optional[np.ndarray]) -> Optional[float]:
+        if face_kp is None or face_kp.size == 0: return 0.0
+        pts = face_kp[0] if face_kp.ndim == 3 else face_kp
+        
+        try:
+            v = np.linalg.norm(pts[TOP_LIP] - pts[BOTTOM_LIP])
+            h = np.linalg.norm(pts[LEFT_CORNER] - pts[RIGHT_CORNER])
+            if h < 1e-6: return 0.0
+            return float(v / h)
+        except: 
+            return 0.0
+
+    def _map_to_state(self, raw: float, smoothed: float) -> int:
+        current_mar = raw
+        
+        if current_mar > self._threshold:
+            self._open_frames += 1
+        else:
+            self._open_frames = 0
+            
+        if self._open_frames >= self._min_duration and not self._yawn_counted:
+            self._yawn_counted = True
+            return 1
+            
+        if current_mar <= self._threshold:
+            self._yawn_counted = False
+            
+        return 0
+
+    def reset(self):
+        super().reset()
+        self._open_frames = 0
+        self._yawn_counted = False
