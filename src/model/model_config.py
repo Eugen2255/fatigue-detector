@@ -10,11 +10,15 @@ class ModelConfig:
     # Ожидаемые признаки (строго в этом порядке!)
     expected_features: List[str] = field(default_factory=lambda: [
         'blink_count', 'blink_frequency', 'blink_max_interval', 'blink_avg_interval',
+        'yawn_count', 'yawn_pct', 'perclos_pct',
         'head_tilt_max_angle', 'head_tilt_avg_angle', 'head_tilt_std_angle',
         'head_tilt_light_pct', 'head_tilt_heavy_pct', 'head_tilt_events',
         'rubbing_count', 'rubbing_duration_avg', 'rubbing_pct',
+        'key_press_count', 'key_press_rate', 'active_keys_avg', 'keyboard_burst_pct',
+        'mouse_click_count', 'mouse_click_rate', 'mouse_distance_total', 'mouse_speed_avg',
+        'mouse_active_pct', 'idle_pct', 'idle_avg_sec',
         'face_detected_pct', 'pose_detected_pct', 'frames_no_face',
-        'activity_score', 'fatigue_score_1', 'fatigue_score_2', 'fatigue_score_3',
+        'activity_score', 'input_activity_score', 'fatigue_score_1', 'fatigue_score_2', 'fatigue_score_3',
         'time_sin', 'time_cos'
     ])
     

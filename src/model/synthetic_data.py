@@ -38,6 +38,19 @@ class FatigueProfile:
     rubbing_count: Tuple[int, int] = (0, 1)
     rubbing_duration: Tuple[float, float] = (0.5, 2.0)
     rubbing_pct: Tuple[float, float] = (0.0, 3.0)
+    yawn_count: Tuple[int, int] = (0, 0)
+    perclos_pct: Tuple[float, float] = (2.0, 10.0)
+
+    # User input activity over a short realtime window.
+    key_press_count: Tuple[int, int] = (2, 18)
+    active_keys_avg: Tuple[float, float] = (0.0, 1.5)
+    keyboard_burst_pct: Tuple[float, float] = (0.0, 8.0)
+    mouse_click_count: Tuple[int, int] = (0, 5)
+    mouse_distance_total: Tuple[float, float] = (80.0, 1200.0)
+    mouse_speed_avg: Tuple[float, float] = (50.0, 900.0)
+    mouse_active_pct: Tuple[float, float] = (25.0, 95.0)
+    idle_pct: Tuple[float, float] = (0.0, 10.0)
+    idle_avg_sec: Tuple[float, float] = (0.0, 1.2)
     
     # Качество детекции
     face_detected_pct: Tuple[float, float] = (95.0, 100.0)
@@ -57,37 +70,70 @@ class SyntheticDataGenerator:
     # Профили для трёх классов: 0=Norm, 1=Medium, 2=Strong
     PROFILES: Dict[int, FatigueProfile] = {
         0: FatigueProfile(
-            blink_count=(1, 4),
-            blink_interval=(8.0, 20.0),
+            blink_count=(0, 2),
+            blink_interval=(12.0, 30.0),
             tilt_max_angle=(0.0, 15.0),
-            tilt_light_pct=(5.0, 20.0),
-            tilt_heavy_pct=(0.0, 3.0),
+            tilt_light_pct=(0.0, 12.0),
+            tilt_heavy_pct=(0.0, 2.0),
             rubbing_count=(0, 1),
-            rubbing_pct=(0.0, 3.0),
+            rubbing_pct=(0.0, 2.5),
+            yawn_count=(0, 0),
+            perclos_pct=(1.0, 9.0),
+            key_press_count=(3, 22),
+            active_keys_avg=(0.0, 1.8),
+            keyboard_burst_pct=(0.0, 12.0),
+            mouse_click_count=(0, 8),
+            mouse_distance_total=(120.0, 1800.0),
+            mouse_speed_avg=(80.0, 1100.0),
+            mouse_active_pct=(35.0, 98.0),
+            idle_pct=(0.0, 8.0),
+            idle_avg_sec=(0.0, 0.9),
             activity_score=(0.1, 0.4),
             fatigue_score_base=(1.0, 3.0),
             noise_scale=0.12
         ),
         1: FatigueProfile(
-            blink_count=(4, 8),
-            blink_interval=(4.0, 12.0),
+            blink_count=(1, 4),
+            blink_interval=(7.0, 20.0),
             tilt_max_angle=(15.0, 30.0),
             tilt_light_pct=(15.0, 35.0),
-            tilt_heavy_pct=(3.0, 12.0),
+            tilt_heavy_pct=(2.0, 10.0),
             rubbing_count=(1, 3),
             rubbing_pct=(3.0, 10.0),
+            yawn_count=(0, 1),
+            perclos_pct=(8.0, 24.0),
+            key_press_count=(1, 14),
+            active_keys_avg=(0.0, 1.2),
+            keyboard_burst_pct=(0.0, 8.0),
+            mouse_click_count=(0, 5),
+            mouse_distance_total=(60.0, 1000.0),
+            mouse_speed_avg=(30.0, 700.0),
+            mouse_active_pct=(15.0, 80.0),
+            idle_pct=(5.0, 28.0),
+            idle_avg_sec=(0.6, 3.5),
             activity_score=(0.3, 0.7),
             fatigue_score_base=(3.0, 6.0),
             noise_scale=0.15
         ),
         2: FatigueProfile(
-            blink_count=(7, 15),
-            blink_interval=(2.0, 7.0),
+            blink_count=(2, 7),
+            blink_interval=(3.0, 12.0),
             tilt_max_angle=(30.0, 55.0),
             tilt_light_pct=(25.0, 50.0),
             tilt_heavy_pct=(10.0, 30.0),
             rubbing_count=(3, 10),
             rubbing_pct=(8.0, 25.0),
+            yawn_count=(0, 2),
+            perclos_pct=(22.0, 55.0),
+            key_press_count=(0, 8),
+            active_keys_avg=(0.0, 0.8),
+            keyboard_burst_pct=(0.0, 5.0),
+            mouse_click_count=(0, 3),
+            mouse_distance_total=(0.0, 650.0),
+            mouse_speed_avg=(0.0, 420.0),
+            mouse_active_pct=(0.0, 55.0),
+            idle_pct=(18.0, 70.0),
+            idle_avg_sec=(2.0, 9.0),
             activity_score=(0.6, 1.0),
             fatigue_score_base=(5.0, 10.0),
             noise_scale=0.18
@@ -152,6 +198,22 @@ class SyntheticDataGenerator:
         rubbing_count = self._sample_int_range(rng, profile.rubbing_count)
         rubbing_dur = self._sample_range(rng, profile.rubbing_duration) if rubbing_count > 0 else 0.0
         rubbing_pct = self._sample_range(rng, profile.rubbing_pct)
+
+        yawn_count = self._sample_int_range(rng, profile.yawn_count)
+        yawn_pct = min(100.0, yawn_count / 30.0 * 100.0)
+        perclos_pct = self._sample_range(rng, profile.perclos_pct)
+
+        key_press_count = self._sample_int_range(rng, profile.key_press_count)
+        key_press_rate = key_press_count / 30.0 * 30.0
+        active_keys_avg = self._sample_range(rng, profile.active_keys_avg)
+        keyboard_burst_pct = self._sample_range(rng, profile.keyboard_burst_pct)
+        mouse_click_count = self._sample_int_range(rng, profile.mouse_click_count)
+        mouse_click_rate = mouse_click_count / 30.0 * 30.0
+        mouse_distance_total = self._sample_range(rng, profile.mouse_distance_total)
+        mouse_speed_avg = self._sample_range(rng, profile.mouse_speed_avg)
+        mouse_active_pct = self._sample_range(rng, profile.mouse_active_pct)
+        idle_pct = self._sample_range(rng, profile.idle_pct)
+        idle_avg_sec = self._sample_range(rng, profile.idle_avg_sec)
         
         # Детекция
         face_pct = self._sample_range(rng, profile.face_detected_pct)
@@ -160,17 +222,17 @@ class SyntheticDataGenerator:
         
         # === Агрегированные признаки (с корреляциями) ===
         # activity_score: комбинация частоты морганий, наклона и потирания
-        activity = (
-            min(blink_freq / 10, 1.0) * 0.4 +
-            min(tilt_max / 50, 1.0) * 0.35 +
-            min(rubbing_pct / 25, 1.0) * 0.25
+        activity = (blink_freq * 0.4 + tilt_avg * 0.3 + rubbing_pct * 0.3) / 100.0
+        input_activity = (
+            min(key_press_rate, 180.0) / 180.0 * 0.4 +
+            min(mouse_click_rate, 60.0) / 60.0 * 0.2 +
+            min(mouse_active_pct, 100.0) / 100.0 * 0.4
         )
         
         # fatigue_score_*: производные признаки для модели
-        fatigue_base = self._sample_range(rng, profile.fatigue_score_base)
-        fatigue_1 = blink_freq * 0.5 + rng.normal(0, 0.3)
-        fatigue_2 = tilt_heavy * 0.6 + rng.normal(0, 0.4)
-        fatigue_3 = rubbing_pct * 0.4 + rng.normal(0, 0.2)
+        fatigue_1 = blink_freq * 0.35 + yawn_pct * 0.25 + perclos_pct * 0.15 + rng.normal(0, 0.15)
+        fatigue_2 = tilt_heavy * 0.45 + idle_pct * 0.20 + rng.normal(0, 0.2)
+        fatigue_3 = rubbing_pct * 0.25 + idle_avg_sec * 4.0 - input_activity * 10.0 + rng.normal(0, 0.3)
         
         # Временные признаки (синусоида от "времени" в окне)
         time_phase = rng.uniform(0, 2 * np.pi)
@@ -183,6 +245,9 @@ class SyntheticDataGenerator:
             'blink_frequency': max(0.1, blink_freq),
             'blink_max_interval': max(1.0, max_interval),
             'blink_avg_interval': max(1.0, avg_interval),
+            'yawn_count': yawn_count,
+            'yawn_pct': max(0.0, yawn_pct),
+            'perclos_pct': max(0.0, perclos_pct),
             'head_tilt_max_angle': max(0.0, tilt_max),
             'head_tilt_avg_angle': max(0.0, tilt_avg),
             'head_tilt_std_angle': max(0.0, tilt_std),
@@ -192,10 +257,22 @@ class SyntheticDataGenerator:
             'rubbing_count': rubbing_count,
             'rubbing_duration_avg': max(0.0, rubbing_dur),
             'rubbing_pct': max(0.0, rubbing_pct),
+            'key_press_count': key_press_count,
+            'key_press_rate': max(0.0, key_press_rate),
+            'active_keys_avg': max(0.0, active_keys_avg),
+            'keyboard_burst_pct': max(0.0, keyboard_burst_pct),
+            'mouse_click_count': mouse_click_count,
+            'mouse_click_rate': max(0.0, mouse_click_rate),
+            'mouse_distance_total': max(0.0, mouse_distance_total),
+            'mouse_speed_avg': max(0.0, mouse_speed_avg),
+            'mouse_active_pct': max(0.0, mouse_active_pct),
+            'idle_pct': max(0.0, idle_pct),
+            'idle_avg_sec': max(0.0, idle_avg_sec),
             'face_detected_pct': min(100.0, max(0.0, face_pct)),
             'pose_detected_pct': min(100.0, max(0.0, pose_pct)),
             'frames_no_face': frames_no_face,
-            'activity_score': min(1.0, max(0.0, activity)),
+            'activity_score': max(0.0, activity),
+            'input_activity_score': min(1.0, max(0.0, input_activity)),
             'fatigue_score_1': max(0.0, fatigue_1),
             'fatigue_score_2': max(0.0, fatigue_2),
             'fatigue_score_3': max(0.0, fatigue_3),
@@ -210,8 +287,14 @@ class SyntheticDataGenerator:
             if key != 'fatigue_label' and isinstance(features[key], (int, float)):
                 noisy = self._add_noise(rng, float(features[key]), noise_scale)
                 # Ограничиваем физически возможные значения
-                if 'pct' in key or 'score' in key:
+                if key in ('time_sin', 'time_cos'):
+                    features[key] = min(1.0, max(-1.0, noisy))
+                elif 'pct' in key:
                     features[key] = min(100.0, max(0.0, noisy))
+                elif key in ('activity_score', 'input_activity_score'):
+                    features[key] = min(1.0, max(0.0, noisy))
+                elif 'score' in key:
+                    features[key] = noisy
                 elif 'angle' in key:
                     features[key] = max(0.0, noisy)
                 elif 'count' in key or 'events' in key or 'frames' in key:
