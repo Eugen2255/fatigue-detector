@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -221,74 +222,182 @@ class CVWorker(QThread):
             input_summary = self.collector.recent_input_summary(self.window_size)
             advice = self.recommender.get_advice(fatigue_level, self._frame_idx)
 
+            ui_data = {
+                "frame": self._frame_idx,
+                "blink": metrics.get("blink", 0),
+                "yawn": metrics.get("yawn", 0),
+                "perclos": self.collector.recent_perclos_pct(),
+                "rubbing": metrics.get("rubbing", False),
+                "tilt_state": tilt_state,
+                "key_rate": input_summary["key_rate"],
+                "mouse_click_rate": input_summary["mouse_click_rate"],
+                "idle_sec": input_summary["idle_sec"],
+                "total_blinks": self.collector.total_blinks,
+                "total_yawns": self.collector.total_yawn,
+                "fatigue_level": self.current_level,
+                "fatigue_conf": self.current_conf,
+                "fatigue_text": fatigue_text,
+                "advice": advice,
+                "online_updates": self.classifier.online_learner.update_count,
+                "storage_path": str(self.collector.db_path),
+                "queue_depth": self.grabber.queue.qsize(),
+                "show_debug": self._show_debug,
+                "show_landmarks": self._show_landmarks,
+            }
+
             display_frame = frame.copy()
             if self._show_landmarks:
                 draw_landmarks(display_frame, face_kp, pose_kp)
 
-            self._draw_status(display_frame, fatigue_text, fatigue_color, advice)
-
             if self._show_debug:
-                self._draw_debug_overlay(display_frame, tilt_state, input_summary)
+                self._draw_debug_overlay(display_frame, ui_data)
+            self._draw_status(display_frame, ui_data, fatigue_color)
 
             h, w, ch = display_frame.shape
             rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
             q_img = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888).copy()
             self.frame_ready.emit(q_img)
 
-            self.metrics_ready.emit(
-                {
-                    "frame": self._frame_idx,
-                    "blink": metrics.get("blink", 0),
-                    "yawn": metrics.get("yawn", 0),
-                    "perclos": self.collector.recent_perclos_pct(),
-                    "rubbing": metrics.get("rubbing", False),
-                    "tilt_state": tilt_state,
-                    "key_rate": input_summary["key_rate"],
-                    "mouse_click_rate": input_summary["mouse_click_rate"],
-                    "idle_sec": input_summary["idle_sec"],
-                    "total_blinks": self.collector.total_blinks,
-                    "total_yawns": self.collector.total_yawn,
-                    "fatigue_level": self.current_level,
-                    "fatigue_conf": self.current_conf,
-                    "fatigue_text": fatigue_text,
-                    "advice": advice,
-                    "online_updates": self.classifier.online_learner.update_count,
-                    "storage_path": str(self.collector.db_path),
-                    "queue_depth": self.grabber.queue.qsize(),
-                    "show_debug": self._show_debug,
-                    "show_landmarks": self._show_landmarks,
-                }
-            )
+            self.metrics_ready.emit(ui_data)
 
         self._shutdown()
 
-    def _draw_debug_overlay(self, frame, tilt_state, input_summary):
+    def _draw_debug_overlay(self, frame, data):
+        tilt_text = {0: "Normal", 1: "Light", 2: "Heavy"}.get(data["tilt_state"], "N/A")
         lines = [
-            f"Frame: {self._frame_idx}",
-            f"Blinks total: {self.collector.total_blinks}",
-            f"Yawns total: {self.collector.total_yawn}",
-            f"PERCLOS: {self.collector.recent_perclos_pct():.1f}%",
-            f"Keys/min: {input_summary['key_rate']:.1f}",
-            f"Clicks/min: {input_summary['mouse_click_rate']:.1f}",
-            f"Idle: {input_summary['idle_sec']:.1f}s",
-            f"Tilt state: {tilt_state}",
+            f"Frame: {data['frame']}",
+            f"Blink Event: {data['blink']}",
+            f"Yawn Event: {data['yawn']}",
+            f"PERCLOS: {data['perclos']:.1f}%",
+            f"Rubbing: {'YES' if data['rubbing'] else 'OK'}",
+            f"Tilt: {tilt_text}",
+            f"Keys/min: {data['key_rate']:.1f}",
+            f"Clicks/min: {data['mouse_click_rate']:.1f}",
+            f"Idle: {data['idle_sec']:.1f}s",
+            f"Blinks Total: {data['total_blinks']}",
+            f"Yawns Total: {data['total_yawns']}",
+            f"Online Updates: {data['online_updates']}",
+            f"Queue: {data['queue_depth']}",
         ]
-        x, y = 20, 35
-        overlay = frame.copy()
-        box_h = 24 * len(lines) + 20
-        cv2.rectangle(overlay, (10, 10), (355, 10 + box_h), (18, 20, 24), -1)
-        cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
-        for idx, line in enumerate(lines):
-            cv2.putText(frame, line, (x, y + idx * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (232, 232, 232), 1, cv2.LINE_AA)
+        self._draw_text_panel(frame, lines, x=16, y=16, max_width=390, font_scale=0.58, color=(232, 232, 232))
 
-    def _draw_status(self, frame, fatigue_text, fatigue_color, advice):
+    def _draw_status(self, frame, data, fatigue_color):
         h, w, _ = frame.shape
-        status_size = cv2.getTextSize(fatigue_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
-        text_x = (w - status_size[0]) // 2
-        cv2.rectangle(frame, (text_x - 12, h - 68), (text_x + status_size[0] + 12, h - 18), (0, 0, 0), -1)
-        cv2.putText(frame, fatigue_text, (text_x, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, fatigue_color, 2, cv2.LINE_AA)
+        fatigue_text = data.get("fatigue_text") or "UNKNOWN"
+        advice = data.get("advice")
+        status_lines = [
+            fatigue_text,
+            f"Model level: {int(data['fatigue_level'])} | Confidence: {data['fatigue_conf'] * 100:.1f}%",
+        ]
+
+        status_width = min(430, max(320, w // 3))
+        status_x = max(16, w - status_width - 16)
+        status_wrapped = []
+        for line in status_lines:
+            status_wrapped.extend(self._wrap_cv_text(str(line), status_width - 24, 0.62, 1))
+        status_height = 22 + 22 * len(status_wrapped)
+        status_y = max(16, h - status_height - 16)
+        self._draw_text_panel(
+            frame,
+            status_lines,
+            x=status_x,
+            y=status_y,
+            max_width=status_width,
+            font_scale=0.62,
+            color=fatigue_color,
+            accent_first=True,
+        )
+
         if advice:
-            cv2.putText(frame, advice, (20, h - 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (235, 235, 235), 2, cv2.LINE_AA)
+            advice_width = max(300, status_x - 32)
+            advice_lines = self._wrap_cv_text(f"Advice: {advice}", advice_width - 24, 0.58, 1)
+            advice_height = 20 + 22 * len(advice_lines)
+            advice_y = max(16, h - advice_height - 16)
+            if advice_y + advice_height > status_y and advice_width + 32 > status_x:
+                advice_y = max(16, status_y - advice_height - 12)
+            self._draw_text_panel(
+                frame,
+                advice_lines,
+                x=16,
+                y=advice_y,
+                max_width=advice_width,
+                font_scale=0.58,
+                color=(235, 235, 235),
+            )
+
+    def _draw_text_panel(
+        self,
+        frame,
+        lines,
+        x,
+        y,
+        max_width,
+        font_scale=0.58,
+        color=(232, 232, 232),
+        accent_first=False,
+    ):
+        padding_x = 12
+        padding_y = 11
+        line_gap = 22
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        thickness = 1
+
+        wrapped = []
+        for line in lines:
+            wrapped.extend(self._wrap_cv_text(str(line), max_width - padding_x * 2, font_scale, thickness))
+
+        text_width = max(
+            cv2.getTextSize(line, font, font_scale, thickness)[0][0]
+            for line in wrapped
+        ) if wrapped else 0
+        box_width = min(max_width, text_width + padding_x * 2)
+        box_height = padding_y * 2 + line_gap * len(wrapped)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x, y), (x + box_width, y + box_height), (12, 17, 24), -1)
+        cv2.addWeighted(overlay, 0.76, frame, 0.24, 0, frame)
+
+        for idx, line in enumerate(wrapped):
+            line_color = color if (idx == 0 and accent_first) else (232, 232, 232)
+            cv2.putText(
+                frame,
+                line,
+                (x + padding_x, y + padding_y + 16 + idx * line_gap),
+                font,
+                font_scale,
+                line_color,
+                thickness,
+                cv2.LINE_AA,
+            )
+
+    def _wrap_cv_text(self, text, max_width, font_scale, thickness):
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        words = str(text).split()
+        if not words:
+            return [""]
+
+        lines = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            width = cv2.getTextSize(candidate, font, font_scale, thickness)[0][0]
+            if width <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+            current = self._trim_cv_text(word, max_width, font_scale, thickness)
+        if current:
+            lines.append(current)
+        return lines
+
+    def _trim_cv_text(self, text, max_width, font_scale, thickness):
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        if cv2.getTextSize(text, font, font_scale, thickness)[0][0] <= max_width:
+            return text
+        trimmed = text
+        while len(trimmed) > 1 and cv2.getTextSize(f"{trimmed}...", font, font_scale, thickness)[0][0] > max_width:
+            trimmed = trimmed[:-1]
+        return f"{trimmed}..."
 
     def stop(self):
         self._running = False
@@ -349,7 +458,7 @@ class FatigueApp(QMainWindow):
             QGroupBox {
                 background: #151d27;
                 border: 1px solid #2a3a4d;
-                border-radius: 10px;
+                border-radius: 8px;
                 margin-top: 20px;
                 padding: 16px 12px 12px 12px;
                 font-weight: 650;
@@ -364,8 +473,8 @@ class FatigueApp(QMainWindow):
                 background: #223044;
                 color: #f1f6ff;
                 border: 1px solid #3a4f68;
-                border-radius: 8px;
-                padding: 9px 12px;
+                border-radius: 7px;
+                padding: 10px 14px;
                 font-weight: 600;
             }
             QPushButton:hover {
@@ -384,7 +493,7 @@ class FatigueApp(QMainWindow):
                 background: #090d12;
                 color: #7f91a7;
                 border: 1px solid #253449;
-                border-radius: 12px;
+                border-radius: 8px;
             }
             QLabel#StatusLabel {
                 font-size: 24px;
@@ -397,7 +506,7 @@ class FatigueApp(QMainWindow):
                 background: #0b1118;
                 color: #c6f6d5;
                 border: 1px solid #253449;
-                border-radius: 8px;
+                border-radius: 7px;
                 padding: 8px;
                 font-family: Consolas;
             }
@@ -429,7 +538,8 @@ class FatigueApp(QMainWindow):
         video_layout = QVBoxLayout(video_group)
         self.video_label = QLabel("Camera preview")
         self.video_label.setObjectName("VideoPreview")
-        self.video_label.setMinimumSize(860, 620)
+        self.video_label.setMinimumSize(720, 420)
+        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label.setAlignment(Qt.AlignCenter)
         video_layout.addWidget(self.video_label)
 
@@ -438,12 +548,27 @@ class FatigueApp(QMainWindow):
         left.addWidget(video_group)
         left.addWidget(help_strip)
 
+        logs_group = QGroupBox("Log")
+        logs_layout = QVBoxLayout(logs_group)
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setMinimumHeight(150)
+        self.log_box.setMaximumHeight(260)
+        logs_layout.addWidget(self.log_box)
+        left.addWidget(logs_group)
+
         right = QVBoxLayout()
         right.setSpacing(12)
         right.setContentsMargins(0, 0, 0, 0)
 
         controls_group = QGroupBox("Controls")
+        controls_group.setMinimumWidth(360)
         controls_layout = QGridLayout(controls_group)
+        controls_layout.setContentsMargins(12, 18, 12, 12)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(12)
+        controls_layout.setColumnStretch(0, 1)
+        controls_layout.setColumnStretch(1, 1)
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
         self.btn_reset = QPushButton("Reset")
@@ -460,7 +585,8 @@ class FatigueApp(QMainWindow):
             self.btn_export,
         ]
         for btn in controls:
-            btn.setMinimumHeight(38)
+            btn.setMinimumSize(150, 42)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         positions = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
         for btn, pos in zip(controls, positions):
             controls_layout.addWidget(btn, *pos)
@@ -520,21 +646,14 @@ class FatigueApp(QMainWindow):
         session_layout.addWidget(self.lbl_storage)
         session_layout.addWidget(self.lbl_modes)
 
-        logs_group = QGroupBox("Log")
-        logs_layout = QVBoxLayout(logs_group)
-        self.log_box = QTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(220)
-        logs_layout.addWidget(self.log_box)
-
         right.addWidget(controls_group)
         right.addWidget(metrics_group)
         right.addWidget(fatigue_group)
         right.addWidget(session_group)
-        right.addWidget(logs_group, 1)
+        right.addStretch(1)
 
-        root.addLayout(left, 3)
-        root.addLayout(right, 2)
+        root.addLayout(left, 4)
+        root.addLayout(right, 1)
 
         self.btn_start.clicked.connect(self._start_processing)
         self.btn_stop.clicked.connect(self._stop_processing)

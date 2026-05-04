@@ -1,7 +1,44 @@
-__pycache__
-.vscode
-venv
-.venv
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime outputs
+output/
+src/output/
+src/src/output/
+src/models/
+collected_metrics/
+collected_metrics.*
 final_report.json
-collected_metrics
-dist
+src/final_report.json
+*.sqlite3
+*.db
+
+# Training and dataset artifacts
+data/
+datasets/
+*.csv
+!src/metrics_config.yaml
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.toc
+*.pyz
+
+# Logs
+*.log
