@@ -1,257 +1,795 @@
-import sys
-import cv2
-import logging
-from pathlib import Path
-from typing import Optional
 import os
+import queue
+import sys
+import threading
+import time
 import warnings
+from pathlib import Path
 
+import cv2
+import numpy as np
+from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtGui import QAction, QFont, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTextEdit, QProgressBar, QWidget, QGroupBox
+    QApplication,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import QThread, Signal, Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap, QFont
 
-# Ваши существующие модули
-from config import MetricConfig, pose_path, face_path
+from collector.collector import MetricsCollector
+from config import MetricConfig, face_path, pose_path
 from detectors.face_detector import FaceDetector
 from detectors.pose_detector import PoseDetector
-from pipeline import FatiguePipeline
-from collector.collector import MetricsCollector
 from model.fatigue_classifier import FatigueClassifier
 from model.model_config import ModelConfig as ClassifierConfig
+from pipeline import FatiguePipeline
+from utils.input_monitor import InputActivityMonitor
+from utils.recommender import Recommender
+from utils.state_tracker import FatigueStateTracker
+
+import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 warnings.filterwarnings("ignore", message=".*landmark_projection_calculator.*")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def draw_landmarks(frame: np.ndarray, face_kp: np.ndarray | None, pose_kp: np.ndarray | None) -> None:
+    if face_kp is not None:
+        for pt in face_kp[0]:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 2, (0, 200, 0), -1)
+    if pose_kp is not None:
+        for pt in pose_kp[0]:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 3, (150, 0, 255), -1)
+
+
+class FrameGrabber:
+    def __init__(self, camera_index: int = 0):
+        self.camera_index = camera_index
+        self.queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=2)
+        self._cap: cv2.VideoCapture | None = None
+        self._thread: threading.Thread | None = None
+        self._running = threading.Event()
+
+    def start(self) -> bool:
+        self._cap = cv2.VideoCapture(self.camera_index)
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        if not self._cap.isOpened():
+            return False
+        self._running.set()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return True
+
+    def _loop(self) -> None:
+        while self._running.is_set():
+            if self._cap is None:
+                break
+            ret, frame = self._cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            frame = cv2.flip(frame, 1)
+            while True:
+                try:
+                    self.queue.put_nowait(frame)
+                    break
+                except queue.Full:
+                    try:
+                        self.queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+    def get_latest(self) -> np.ndarray | None:
+        latest = None
+        while True:
+            try:
+                latest = self.queue.get_nowait()
+            except queue.Empty:
+                break
+        return latest
+
+    def stop(self) -> None:
+        self._running.clear()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if self._cap is not None and self._cap.isOpened():
+            self._cap.release()
+        self._cap = None
+        self._thread = None
+
 
 class CVWorker(QThread):
-    """Фоновый поток для захвата видео, детекции и метрик."""
     frame_ready = Signal(QImage)
     metrics_ready = Signal(dict)
     log_message = Signal(str)
     error_occurred = Signal(str)
-    
+
     def __init__(self):
         super().__init__()
         self._running = False
-        self._cap = None
         self._frame_idx = 0
-        
-        # Инициализация
+        self._show_landmarks = False
+        self._show_debug = False
+        self._session_started = int(time.time())
+
         self.app_cfg = MetricConfig()
         self.clf_cfg = ClassifierConfig()
         self.face_det = FaceDetector(face_path, num_faces=1)
         self.pose_det = PoseDetector(pose_path, num_poses=1)
         self.pipeline = FatiguePipeline(self.app_cfg)
-        self.collector = MetricsCollector(fps=self.app_cfg.fps_target)
-        
+        db_path = Path("src") / "output" / f"session_{self._session_started}" / "metrics_live.sqlite3"
+        self.collector = MetricsCollector(fps=self.app_cfg.fps_target, db_path=db_path)
+        self.input_monitor = InputActivityMonitor()
+        self.recommender = Recommender(cooldown_frames=300)
+        self.state_tracker = FatigueStateTracker(decay_rate=0.985)
+        self.grabber = FrameGrabber(camera_index=0)
+
         self.classifier = FatigueClassifier(self.clf_cfg)
         self.classifier.load(str(self.clf_cfg.default_model_path))
-        self.model_ready = self.classifier.is_ready
-        
-        self.WINDOW_SIZE = 30
+
+        self.window_size = 30
         self.current_level = 0
         self.current_conf = 0.0
 
+    def set_show_landmarks(self, value: bool) -> None:
+        self._show_landmarks = value
+
+    def set_show_debug(self, value: bool) -> None:
+        self._show_debug = value
+
+    def reset_state(self) -> None:
+        self.collector.reset()
+        self.pipeline.reset()
+        self.input_monitor.reset()
+        self.state_tracker.fatigue_score = 0.0
+        self.state_tracker.level = 0
+        self.recommender.last_advice_frame = -self.recommender.cooldown
+        self._frame_idx = 0
+        self.current_level = 0
+        self.current_conf = 0.0
+        self.log_message.emit("Session state reset.")
+
     def run(self):
         self._running = True
-        self._cap = cv2.VideoCapture(0)
-        if not self._cap.isOpened():
-            self.error_occurred.emit("Не удалось открыть камеру")
+        if not self.grabber.start():
+            self.error_occurred.emit("Failed to open camera")
             return
 
-        self.log_message.emit("Камера подключена. Обработка запущена.")
-        
+        self.log_message.emit("Camera connected. Processing started.")
         while self._running:
-            ret, frame = self._cap.read()
-            if not ret:
+            frame = self.grabber.get_latest()
+            if frame is None:
+                self.msleep(5)
                 continue
 
+            input_snapshot = self.input_monitor.sample()
             self._frame_idx += 1
-            
-            # 1. Детекция
+
             face_kp = self.face_det.get_key_pointers(frame)
             pose_kp = self.pose_det.get_key_pointers(frame)
-            
-            # 2. Метрики
             metrics = self.pipeline.step(face_kp, pose_kp)
-            
-            # 3. Сбор данных
-            tilt = metrics.get("head_tilt")
-            tilt_angle = tilt[0] if tilt else None
-            tilt_state = tilt[1] if tilt else 0
-            
+
+            tilt_data = metrics.get("head_tilt")
+            tilt_angle = tilt_data[0] if isinstance(tilt_data, tuple) else None
+            tilt_state = tilt_data[1] if isinstance(tilt_data, tuple) else 0
+
+            tracker_input = {
+                "blink": metrics.get("blink", 0),
+                "yawn": metrics.get("yawn", 0),
+                "rubbing": metrics.get("rubbing", False),
+                "tilt_state": tilt_state,
+            }
+            self.state_tracker.update(tracker_input)
+            fatigue_level, fatigue_color, fatigue_text = self.state_tracker.get_status()
+
             self.collector.add_frame(
                 frame_idx=self._frame_idx,
                 blink=metrics.get("blink", 0),
+                perclos=metrics.get("perclos", 0),
                 rubbing=metrics.get("rubbing", False),
                 head_tilt_state=tilt_state,
                 head_tilt_angle=tilt_angle,
-                face_kps=face_kp, pose_kps=pose_kp
+                yawn=metrics.get("yawn", 0),
+                input_metrics=input_snapshot.to_dict(),
+                face_kps=face_kp,
+                pose_kps=pose_kp,
             )
-            
-            # 4. Классификация (каждые 10 кадров)
-            if self.model_ready and self._frame_idx % 10 == 0 and len(self.collector._history) >= self.WINDOW_SIZE:
+
+            if self._frame_idx % 10 == 0 and self.collector.frame_count >= self.window_size:
                 try:
-                    df = self.collector.to_dataframe().tail(self.WINDOW_SIZE)
+                    df = self.collector.recent_window_dataframe(self.window_size)
                     pred, probs = self.classifier.predict_from_window(df)
                     self.current_level = int(pred[0])
                     self.current_conf = float(probs[0].max())
-                except Exception as e:
-                    self.log_message.emit(f"Ошибка классификации: {e}")
+                    self.classifier.update_online_from_window(df, self.current_level, self.current_conf)
+                except Exception as exc:
+                    self.log_message.emit(f"Classification error: {exc}")
 
-            # 5. Эммит данных в UI
-            h, w, ch = frame.shape
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            q_img = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888)
-            self.frame_ready.emit(q_img)
-            
-            self.metrics_ready.emit({
+            input_summary = self.collector.recent_input_summary(self.window_size)
+            advice = self.recommender.get_advice(fatigue_level, self._frame_idx)
+
+            ui_data = {
                 "frame": self._frame_idx,
                 "blink": metrics.get("blink", 0),
+                "yawn": metrics.get("yawn", 0),
+                "perclos": self.collector.recent_perclos_pct(),
                 "rubbing": metrics.get("rubbing", False),
                 "tilt_state": tilt_state,
+                "key_rate": input_summary["key_rate"],
+                "mouse_click_rate": input_summary["mouse_click_rate"],
+                "idle_sec": input_summary["idle_sec"],
+                "total_blinks": self.collector.total_blinks,
+                "total_yawns": self.collector.total_yawn,
                 "fatigue_level": self.current_level,
-                "fatigue_conf": self.current_conf
-            })
+                "fatigue_conf": self.current_conf,
+                "fatigue_text": fatigue_text,
+                "advice": advice,
+                "online_updates": self.classifier.online_learner.update_count,
+                "storage_path": str(self.collector.db_path),
+                "queue_depth": self.grabber.queue.qsize(),
+                "show_debug": self._show_debug,
+                "show_landmarks": self._show_landmarks,
+            }
+
+            display_frame = frame.copy()
+            if self._show_landmarks:
+                draw_landmarks(display_frame, face_kp, pose_kp)
+
+            if self._show_debug:
+                self._draw_debug_overlay(display_frame, ui_data)
+            self._draw_status(display_frame, ui_data, fatigue_color)
+
+            h, w, ch = display_frame.shape
+            rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            q_img = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888).copy()
+            self.frame_ready.emit(q_img)
+
+            self.metrics_ready.emit(ui_data)
+
+        self._shutdown()
+
+    def _draw_debug_overlay(self, frame, data):
+        tilt_text = {0: "Normal", 1: "Light", 2: "Heavy"}.get(data["tilt_state"], "N/A")
+        lines = [
+            f"Frame: {data['frame']}",
+            f"Blink Event: {data['blink']}",
+            f"Yawn Event: {data['yawn']}",
+            f"PERCLOS: {data['perclos']:.1f}%",
+            f"Rubbing: {'YES' if data['rubbing'] else 'OK'}",
+            f"Tilt: {tilt_text}",
+            f"Keys/min: {data['key_rate']:.1f}",
+            f"Clicks/min: {data['mouse_click_rate']:.1f}",
+            f"Idle: {data['idle_sec']:.1f}s",
+            f"Blinks Total: {data['total_blinks']}",
+            f"Yawns Total: {data['total_yawns']}",
+            f"Online Updates: {data['online_updates']}",
+            f"Queue: {data['queue_depth']}",
+        ]
+        self._draw_text_panel(frame, lines, x=16, y=16, max_width=390, font_scale=0.58, color=(232, 232, 232))
+
+    def _draw_status(self, frame, data, fatigue_color):
+        h, w, _ = frame.shape
+        fatigue_text = data.get("fatigue_text") or "UNKNOWN"
+        advice = data.get("advice")
+        status_lines = [
+            fatigue_text,
+            f"Model level: {int(data['fatigue_level'])} | Confidence: {data['fatigue_conf'] * 100:.1f}%",
+        ]
+
+        status_width = min(430, max(320, w // 3))
+        status_x = max(16, w - status_width - 16)
+        status_wrapped = []
+        for line in status_lines:
+            status_wrapped.extend(self._wrap_cv_text(str(line), status_width - 24, 0.62, 1))
+        status_height = 22 + 22 * len(status_wrapped)
+        status_y = max(16, h - status_height - 16)
+        self._draw_text_panel(
+            frame,
+            status_lines,
+            x=status_x,
+            y=status_y,
+            max_width=status_width,
+            font_scale=0.62,
+            color=fatigue_color,
+            accent_first=True,
+        )
+
+        if advice:
+            advice_width = max(300, status_x - 32)
+            advice_lines = self._wrap_cv_text(f"Advice: {advice}", advice_width - 24, 0.58, 1)
+            advice_height = 20 + 22 * len(advice_lines)
+            advice_y = max(16, h - advice_height - 16)
+            if advice_y + advice_height > status_y and advice_width + 32 > status_x:
+                advice_y = max(16, status_y - advice_height - 12)
+            self._draw_text_panel(
+                frame,
+                advice_lines,
+                x=16,
+                y=advice_y,
+                max_width=advice_width,
+                font_scale=0.58,
+                color=(235, 235, 235),
+            )
+
+    def _draw_text_panel(
+        self,
+        frame,
+        lines,
+        x,
+        y,
+        max_width,
+        font_scale=0.58,
+        color=(232, 232, 232),
+        accent_first=False,
+    ):
+        padding_x = 12
+        padding_y = 11
+        line_gap = 22
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        thickness = 1
+
+        wrapped = []
+        for line in lines:
+            wrapped.extend(self._wrap_cv_text(str(line), max_width - padding_x * 2, font_scale, thickness))
+
+        text_width = max(
+            cv2.getTextSize(line, font, font_scale, thickness)[0][0]
+            for line in wrapped
+        ) if wrapped else 0
+        box_width = min(max_width, text_width + padding_x * 2)
+        box_height = padding_y * 2 + line_gap * len(wrapped)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x, y), (x + box_width, y + box_height), (12, 17, 24), -1)
+        cv2.addWeighted(overlay, 0.76, frame, 0.24, 0, frame)
+
+        for idx, line in enumerate(wrapped):
+            line_color = color if (idx == 0 and accent_first) else (232, 232, 232)
+            cv2.putText(
+                frame,
+                line,
+                (x + padding_x, y + padding_y + 16 + idx * line_gap),
+                font,
+                font_scale,
+                line_color,
+                thickness,
+                cv2.LINE_AA,
+            )
+
+    def _wrap_cv_text(self, text, max_width, font_scale, thickness):
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        words = str(text).split()
+        if not words:
+            return [""]
+
+        lines = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            width = cv2.getTextSize(candidate, font, font_scale, thickness)[0][0]
+            if width <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+            current = self._trim_cv_text(word, max_width, font_scale, thickness)
+        if current:
+            lines.append(current)
+        return lines
+
+    def _trim_cv_text(self, text, max_width, font_scale, thickness):
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        if cv2.getTextSize(text, font, font_scale, thickness)[0][0] <= max_width:
+            return text
+        trimmed = text
+        while len(trimmed) > 1 and cv2.getTextSize(f"{trimmed}...", font, font_scale, thickness)[0][0] > max_width:
+            trimmed = trimmed[:-1]
+        return f"{trimmed}..."
 
     def stop(self):
         self._running = False
-        if self._cap and self._cap.isOpened():
-            self._cap.release()
         self.wait()
-        self.log_message.emit("Оптика и потоки остановлены.")
+
+    def _shutdown(self):
+        self.classifier.online_learner.save()
+        self.grabber.stop()
+        session_dir = Path("src") / "output" / f"session_{self._session_started}"
+        self.collector.save(str(session_dir))
+        self.collector.close()
+        self.face_det.close()
+        self.pose_det.close()
+        self.log_message.emit("Processing stopped.")
 
 
 class FatigueApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Fatigue Detection System")
-        self.resize(960, 640)
-        self.worker = None
-        
+        self.setWindowTitle("Fatigue Detector")
+        self.resize(1360, 860)
+        self.worker: CVWorker | None = None
+        self._apply_style()
         self._setup_ui()
         self._setup_worker()
+        self._setup_hotkeys()
+        self._setup_menu()
+        self.statusBar().showMessage("Ready")
+
+    def _apply_style(self):
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget {
+                background: #0f141b;
+                color: #edf3fb;
+                font-family: Segoe UI;
+                font-size: 13px;
+            }
+            QMenuBar {
+                background: #0f141b;
+                color: #d9e4f2;
+                border-bottom: 1px solid #263342;
+                padding: 4px;
+            }
+            QMenuBar::item:selected, QMenu::item:selected {
+                background: #243447;
+            }
+            QMenu {
+                background: #151d27;
+                color: #edf3fb;
+                border: 1px solid #2e3e50;
+            }
+            QStatusBar {
+                background: #0c1117;
+                color: #8fa2b8;
+                border-top: 1px solid #243140;
+            }
+            QGroupBox {
+                background: #151d27;
+                border: 1px solid #2a3a4d;
+                border-radius: 8px;
+                margin-top: 20px;
+                padding: 16px 12px 12px 12px;
+                font-weight: 650;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+                color: #9fb4cc;
+            }
+            QPushButton {
+                background: #223044;
+                color: #f1f6ff;
+                border: 1px solid #3a4f68;
+                border-radius: 7px;
+                padding: 10px 14px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #2b3c54;
+                border-color: #4b6684;
+            }
+            QPushButton:pressed {
+                background: #1b2839;
+            }
+            QPushButton:disabled {
+                background: #171d25;
+                color: #647287;
+                border-color: #263241;
+            }
+            QLabel#VideoPreview {
+                background: #090d12;
+                color: #7f91a7;
+                border: 1px solid #253449;
+                border-radius: 8px;
+            }
+            QLabel#StatusLabel {
+                font-size: 24px;
+                font-weight: 800;
+            }
+            QLabel#HelpStrip, QLabel#SessionLabel {
+                color: #8fa2b8;
+            }
+            QTextEdit {
+                background: #0b1118;
+                color: #c6f6d5;
+                border: 1px solid #253449;
+                border-radius: 7px;
+                padding: 8px;
+                font-family: Consolas;
+            }
+            QProgressBar {
+                background: #0c1219;
+                border: 1px solid #2a3a4d;
+                border-radius: 7px;
+                height: 18px;
+                text-align: center;
+                color: #dce8f7;
+            }
+            QProgressBar::chunk {
+                border-radius: 6px;
+            }
+            """
+        )
 
     def _setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
-        
-        # === Левая часть: Видео ===
-        vid_group = QGroupBox("Live Feed")
-        vid_layout = QVBoxLayout(vid_group)
-        self.video_label = QLabel()
+        root = QHBoxLayout(central)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
+
+        left = QVBoxLayout()
+        left.setSpacing(12)
+
+        video_group = QGroupBox("Live Feed")
+        video_layout = QVBoxLayout(video_group)
+        self.video_label = QLabel("Camera preview")
+        self.video_label.setObjectName("VideoPreview")
+        self.video_label.setMinimumSize(720, 420)
+        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("background: #222; color: #888;")
-        vid_layout.addWidget(self.video_label)
-        
-        # === Правая часть: Панель метрик ===
-        panel = QWidget()
-        panel.setFixedWidth(300)
-        panel_layout = QVBoxLayout(panel)
-        
-        # Кнопки
-        self.btn_start = QPushButton("▶ Start")
-        self.btn_stop = QPushButton("⏹ Stop")
-        self.btn_stop.setEnabled(False)
-        btn_layout = QHBoxLayout()
-        btn_layout.addWidget(self.btn_start)
-        btn_layout.addWidget(self.btn_stop)
-        panel_layout.addLayout(btn_layout)
-        
-        # Метрики
-        self.lbl_frame = QLabel("Frame: 0")
-        self.lbl_blink = QLabel("Blinks: 0")
-        self.lbl_rubbing = QLabel("Rubbing: No")
-        self.lbl_tilt = QLabel("Tilt: Normal")
-        for lbl in [self.lbl_frame, self.lbl_blink, self.lbl_rubbing, self.lbl_tilt]:
-            lbl.setFont(QFont("Consolas", 10))
-            panel_layout.addWidget(lbl)
-            
-        # Индикатор усталости
-        panel_layout.addSpacing(15)
-        panel_layout.addWidget(QLabel("Fatigue Level:"))
-        self.fatigue_bar = QProgressBar()
-        self.fatigue_bar.setRange(0, 2)
-        self.fatigue_bar.setTextVisible(True)
-        self.fatigue_bar.setFormat("Level: %v")
-        panel_layout.addWidget(self.fatigue_bar)
-        
-        self.lbl_conf = QLabel("Confidence: 0.0%")
-        panel_layout.addWidget(self.lbl_conf)
-        
-        # Лог
-        panel_layout.addSpacing(15)
-        panel_layout.addWidget(QLabel("System Log:"))
+        video_layout.addWidget(self.video_label)
+
+        help_strip = QLabel("Hotkeys: S start/stop | R reset | D debug | L landmarks | Q quit")
+        help_strip.setObjectName("HelpStrip")
+        left.addWidget(video_group)
+        left.addWidget(help_strip)
+
+        logs_group = QGroupBox("Log")
+        logs_layout = QVBoxLayout(logs_group)
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setMaximumHeight(150)
-        self.log_box.setStyleSheet("background: #111; color: #0f0; font-family: monospace;")
-        panel_layout.addWidget(self.log_box)
-        
-        main_layout.addWidget(vid_group, 3)
-        main_layout.addWidget(panel, 2)
-        
-        # Связи кнопок
+        self.log_box.setMinimumHeight(150)
+        self.log_box.setMaximumHeight(260)
+        logs_layout.addWidget(self.log_box)
+        left.addWidget(logs_group)
+
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        right.setContentsMargins(0, 0, 0, 0)
+
+        controls_group = QGroupBox("Controls")
+        controls_group.setMinimumWidth(360)
+        controls_layout = QGridLayout(controls_group)
+        controls_layout.setContentsMargins(12, 18, 12, 12)
+        controls_layout.setHorizontalSpacing(12)
+        controls_layout.setVerticalSpacing(12)
+        controls_layout.setColumnStretch(0, 1)
+        controls_layout.setColumnStretch(1, 1)
+        self.btn_start = QPushButton("Start")
+        self.btn_stop = QPushButton("Stop")
+        self.btn_reset = QPushButton("Reset")
+        self.btn_debug = QPushButton("Show Debug (D)")
+        self.btn_landmarks = QPushButton("Show Landmarks")
+        self.btn_export = QPushButton("Export Session")
+        self.btn_stop.setEnabled(False)
+        controls = [
+            self.btn_start,
+            self.btn_stop,
+            self.btn_reset,
+            self.btn_debug,
+            self.btn_landmarks,
+            self.btn_export,
+        ]
+        for btn in controls:
+            btn.setMinimumSize(150, 42)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        positions = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
+        for btn, pos in zip(controls, positions):
+            controls_layout.addWidget(btn, *pos)
+
+        metrics_group = QGroupBox("Live Metrics")
+        metrics_layout = QGridLayout(metrics_group)
+        self.metric_labels: dict[str, QLabel] = {}
+        metric_names = [
+            ("Frame", "frame"),
+            ("Blink Event", "blink"),
+            ("Yawn Event", "yawn"),
+            ("PERCLOS", "perclos"),
+            ("Rubbing", "rubbing"),
+            ("Tilt", "tilt"),
+            ("Keys/min", "keys"),
+            ("Clicks/min", "clicks"),
+            ("Idle", "idle"),
+            ("Blinks Total", "total_blinks"),
+            ("Yawns Total", "total_yawns"),
+            ("Online Updates", "online_updates"),
+            ("Queue", "queue"),
+        ]
+        for row, (title, key) in enumerate(metric_names):
+            name_lbl = QLabel(title)
+            val_lbl = QLabel("0")
+            name_lbl.setStyleSheet("color:#8fa2b8;")
+            val_lbl.setStyleSheet("color:#f3f8ff; font-weight:700;")
+            name_lbl.setFont(QFont("Consolas", 10))
+            val_lbl.setFont(QFont("Consolas", 10))
+            metrics_layout.addWidget(name_lbl, row, 0)
+            metrics_layout.addWidget(val_lbl, row, 1)
+            self.metric_labels[key] = val_lbl
+
+        fatigue_group = QGroupBox("Fatigue State")
+        fatigue_layout = QVBoxLayout(fatigue_group)
+        self.lbl_status = QLabel("NORMAL")
+        self.lbl_status.setObjectName("StatusLabel")
+        self.lbl_status.setStyleSheet("color:#43c97a;")
+        self.fatigue_bar = QProgressBar()
+        self.fatigue_bar.setRange(0, 2)
+        self.fatigue_bar.setFormat("Model Level: %v")
+        self.lbl_conf = QLabel("Confidence: 0.0%")
+        self.lbl_advice = QLabel("Advice: waiting for more data")
+        self.lbl_advice.setWordWrap(True)
+        fatigue_layout.addWidget(self.lbl_status)
+        fatigue_layout.addWidget(self.fatigue_bar)
+        fatigue_layout.addWidget(self.lbl_conf)
+        fatigue_layout.addWidget(self.lbl_advice)
+
+        session_group = QGroupBox("Session")
+        session_layout = QVBoxLayout(session_group)
+        self.lbl_storage = QLabel("DB: not started")
+        self.lbl_storage.setObjectName("SessionLabel")
+        self.lbl_storage.setWordWrap(True)
+        self.lbl_modes = QLabel("Debug: off | Landmarks: off")
+        self.lbl_modes.setObjectName("SessionLabel")
+        session_layout.addWidget(self.lbl_storage)
+        session_layout.addWidget(self.lbl_modes)
+
+        right.addWidget(controls_group)
+        right.addWidget(metrics_group)
+        right.addWidget(fatigue_group)
+        right.addWidget(session_group)
+        right.addStretch(1)
+
+        root.addLayout(left, 4)
+        root.addLayout(right, 1)
+
         self.btn_start.clicked.connect(self._start_processing)
         self.btn_stop.clicked.connect(self._stop_processing)
+        self.btn_reset.clicked.connect(self._reset_processing)
+        self.btn_debug.clicked.connect(self._toggle_debug)
+        self.btn_landmarks.clicked.connect(self._toggle_landmarks)
+        self.btn_export.clicked.connect(self._export_session)
+
+    def _setup_menu(self):
+        file_menu = self.menuBar().addMenu("File")
+        export_action = QAction("Export Session", self)
+        export_action.triggered.connect(self._export_session)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(export_action)
+        file_menu.addSeparator()
+        file_menu.addAction(quit_action)
+
+    def _setup_hotkeys(self):
+        QShortcut(QKeySequence("S"), self, activated=self._toggle_start_stop)
+        QShortcut(QKeySequence("R"), self, activated=self._reset_processing)
+        QShortcut(QKeySequence("D"), self, activated=self._toggle_debug)
+        QShortcut(QKeySequence("L"), self, activated=self._toggle_landmarks)
+        QShortcut(QKeySequence("Q"), self, activated=self.close)
 
     def _setup_worker(self):
         self.worker = CVWorker()
         self.worker.frame_ready.connect(self._update_video)
         self.worker.metrics_ready.connect(self._update_metrics)
         self.worker.log_message.connect(self._log)
-        self.worker.error_occurred.connect(lambda msg: self._log(f"⚠️ {msg}", True))
+        self.worker.error_occurred.connect(lambda msg: self._log(msg, True))
+
+    def _toggle_start_stop(self):
+        if self.worker and self.worker.isRunning():
+            self._stop_processing()
+        else:
+            self._start_processing()
 
     def _start_processing(self):
-        if not self.worker.isRunning():
+        if self.worker and not self.worker.isRunning():
             self.btn_start.setEnabled(False)
             self.btn_stop.setEnabled(True)
             self.worker.start()
-            
-    def _stop_processing(self):
-        self.worker.stop()
+            self.statusBar().showMessage("Processing started")
+
+    def _stop_processing(self, recreate_worker: bool = True):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        
+        self.statusBar().showMessage("Processing stopped")
+        if recreate_worker:
+            self._setup_worker()
+
+    def _reset_processing(self):
+        if self.worker:
+            self.worker.reset_state()
+            self.statusBar().showMessage("Session reset")
+
+    def _toggle_debug(self):
+        if not self.worker:
+            return
+        new_value = not self.worker._show_debug
+        self.worker.set_show_debug(new_value)
+        self.btn_debug.setText("Hide Debug (D)" if new_value else "Show Debug (D)")
+
+    def _toggle_landmarks(self):
+        if not self.worker:
+            return
+        new_value = not self.worker._show_landmarks
+        self.worker.set_show_landmarks(new_value)
+        self.btn_landmarks.setText("Hide Landmarks" if new_value else "Show Landmarks")
+
+    def _export_session(self):
+        if not self.worker:
+            return
+        target = QFileDialog.getExistingDirectory(self, "Choose export directory")
+        if not target:
+            return
+        self.worker.collector.save(str(Path(target) / f"session_export_{int(time.time())}"))
+        self._log(f"Session exported to {target}")
+
     def _update_video(self, q_img: QImage):
         pixmap = QPixmap.fromImage(q_img)
-        self.video_label.setPixmap(pixmap.scaled(
-            self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        ))
-        
+        self.video_label.setPixmap(
+            pixmap.scaled(self.video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        )
+
     def _update_metrics(self, data: dict):
-        self.lbl_frame.setText(f"Frame: {data['frame']}")
-        self.lbl_blink.setText(f"Blinks: {data['blink']}")
-        self.lbl_rubbing.setText(f"Rubbing: {'⚠️ YES' if data['rubbing'] else 'OK'}")
-        tilt_txt = {0: "Normal", 1: "Light", 2: "⚠️ Heavy"}
-        self.lbl_tilt.setText(f"Tilt: {tilt_txt.get(data['tilt_state'], 'N/A')}")
-        
-        self.fatigue_bar.setValue(data['fatigue_level'])
-        self.lbl_conf.setText(f"Confidence: {data['fatigue_conf']*100:.1f}%")
-        
-        # Цвет прогресс-бара в зависимости от уровня
-        colors = {0: "#00ff00", 1: "#ffcc00", 2: "#ff0000"}
-        self.fatigue_bar.setStyleSheet(f"QProgressBar::chunk {{ background: {colors.get(data['fatigue_level'], '#888')}; }}")
+        self.metric_labels["frame"].setText(str(data["frame"]))
+        self.metric_labels["blink"].setText(str(data["blink"]))
+        self.metric_labels["yawn"].setText(str(data["yawn"]))
+        self.metric_labels["perclos"].setText(f"{data['perclos']:.1f}%")
+        self.metric_labels["rubbing"].setText("YES" if data["rubbing"] else "OK")
+        self.metric_labels["tilt"].setText({0: "Normal", 1: "Light", 2: "Heavy"}.get(data["tilt_state"], "N/A"))
+        self.metric_labels["keys"].setText(f"{data['key_rate']:.1f}")
+        self.metric_labels["clicks"].setText(f"{data['mouse_click_rate']:.1f}")
+        self.metric_labels["idle"].setText(f"{data['idle_sec']:.1f}s")
+        self.metric_labels["total_blinks"].setText(str(data["total_blinks"]))
+        self.metric_labels["total_yawns"].setText(str(data["total_yawns"]))
+        self.metric_labels["online_updates"].setText(str(data["online_updates"]))
+        self.metric_labels["queue"].setText(str(data["queue_depth"]))
+
+        level = int(data["fatigue_level"])
+        colors = {0: "#43c97a", 1: "#ffcb45", 2: "#ff5a5f"}
+        texts = {0: "NORMAL", 1: "WARNING: TIRED", 2: "CRITICAL FATIGUE"}
+        self.lbl_status.setText(data.get("fatigue_text", texts.get(level, "UNKNOWN")))
+        self.lbl_status.setStyleSheet(f"color:{colors.get(level, '#d9dde3')};")
+        self.fatigue_bar.setValue(level)
+        self.fatigue_bar.setStyleSheet(f"QProgressBar::chunk {{ background: {colors.get(level, '#888')}; }}")
+        self.lbl_conf.setText(f"Confidence: {data['fatigue_conf'] * 100:.1f}%")
+        self.lbl_advice.setText(f"Advice: {data['advice'] or 'keep monitoring'}")
+        self.lbl_storage.setText(f"DB: {data['storage_path']}")
+        self.lbl_modes.setText(
+            f"Debug: {'on' if data['show_debug'] else 'off'} | "
+            f"Landmarks: {'on' if data['show_landmarks'] else 'off'}"
+        )
 
     def _log(self, msg: str, error: bool = False):
-        self.log_box.append(f"<span style='color:{'#f00' if error else '#0f0'}'>{msg}</span>")
+        color = "#ff7b7b" if error else "#9ff7bf"
+        self.log_box.append(f"<span style='color:{color}'>{msg}</span>")
         self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
 
     def closeEvent(self, event):
-        self._stop_processing()
-        self.face_det.close() if hasattr(self, 'face_det') else None
+        self._stop_processing(recreate_worker=False)
+        if self.worker is not None:
+            self.worker.classifier.online_learner.save()
+            self.worker.face_det.close()
+            self.worker.pose_det.close()
+            self.worker.collector.close()
         event.accept()
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setApplicationName("Fatigue Detector")
     window = FatigueApp()
     window.show()
     sys.exit(app.exec())
