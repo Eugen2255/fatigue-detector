@@ -1,7 +1,15 @@
 """Конфигурация модели: признаки, пути, гиперпараметры."""
+import sys
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 from pathlib import Path
+
+def get_base_path() -> Path:
+    """Возвращает корневую папку: для PyInstaller или разработки."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS)
+    else:
+        return Path(__file__).resolve().parent.parent
 
 @dataclass
 class ModelConfig:
@@ -22,20 +30,15 @@ class ModelConfig:
         'time_sin', 'time_cos'
     ])
     
-    # Классы для предсказания
     class_names: List[str] = field(default_factory=lambda: [
         'Norm/Light', 'Medium', 'Strong'
     ])
     
+    model_dir: Path = field(init=False)
+    default_model_path: Path = field(init=False)
+    default_scaler_path: Path = field(init=False)
+    default_meta_path: Path = field(init=False)
     
-
-    # Пути по умолчанию
-    model_dir: Path = Path("models")
-    default_model_path: Path = model_dir / "fatigue_classifier.pkl"
-    default_scaler_path: Path = model_dir / "scaler.pkl"
-    default_meta_path: Path = model_dir / "meta.json"
-    
-    # Гиперпараметры для обучения (используются в trainer.py)
     model_type: str = "random_forest"
     rf_params: Dict[str, Any] = field(default_factory=lambda: {
         "n_estimators": 100, "max_depth": 10, "class_weight": "balanced", "random_state": 42
@@ -43,3 +46,11 @@ class ModelConfig:
     xgb_params: Dict[str, Any] = field(default_factory=lambda: {
         "n_estimators": 100, "max_depth": 6, "learning_rate": 0.1, "random_state": 42
     })
+    
+    def __post_init__(self):
+        """Инициализация путей после создания экземпляра."""
+        base = get_base_path()
+        self.model_dir = base / "models"
+        self.default_model_path = self.model_dir / "fatigue_classifier.pkl"
+        self.default_scaler_path = self.model_dir / "scaler.pkl"
+        self.default_meta_path = self.model_dir / "meta.json"

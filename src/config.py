@@ -1,13 +1,20 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from pathlib import Path
+import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+def get_base_path() -> Path:
+    """Определяет корневую папку: для PyInstaller или обычной разработки."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS)
+    else:
+        return Path(__file__).resolve().parent.parent
+
+PROJECT_ROOT = get_base_path()
 MODELS_DIR = PROJECT_ROOT / "models"
 
 face_path = str(MODELS_DIR / "face_landmarker.task")
-pose_path = str(MODELS_DIR / "pose_landmarker_lite.task") # Lite быстрее и стабильнее для real-time
-
+pose_path = str(MODELS_DIR / "pose_landmarker_lite.task")
 @dataclass
 class MetricConfig:
     blink: Dict[str, Any] = field(default_factory=lambda: {"ear_threshold": 0.22})
