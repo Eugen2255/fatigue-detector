@@ -11,3 +11,4 @@ onnxruntime>=1.15.0
 skl2onnx>=1.15.0
 onnx>=1.14.0
 pyinstaller
+gradio>=4.20.0
