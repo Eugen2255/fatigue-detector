@@ -595,7 +595,6 @@ class FatigueApp(QMainWindow):
         metrics_layout = QGridLayout(metrics_group)
         self.metric_labels: dict[str, QLabel] = {}
         metric_names = [
-            ("Frame", "frame"),
             ("Blink Event", "blink"),
             ("Yawn Event", "yawn"),
             ("PERCLOS", "perclos"),
@@ -604,10 +603,6 @@ class FatigueApp(QMainWindow):
             ("Keys/min", "keys"),
             ("Clicks/min", "clicks"),
             ("Idle", "idle"),
-            ("Blinks Total", "total_blinks"),
-            ("Yawns Total", "total_yawns"),
-            ("Online Updates", "online_updates"),
-            ("Queue", "queue"),
         ]
         for row, (title, key) in enumerate(metric_names):
             name_lbl = QLabel(title)
