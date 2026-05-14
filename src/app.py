@@ -602,7 +602,6 @@ class FatigueApp(QMainWindow):
             ("Tilt", "tilt"),
             ("Keys/min", "keys"),
             ("Clicks/min", "clicks"),
-            ("Idle", "idle"),
         ]
         for row, (title, key) in enumerate(metric_names):
             name_lbl = QLabel(title)
@@ -738,7 +737,6 @@ class FatigueApp(QMainWindow):
         )
 
     def _update_metrics(self, data: dict):
-        self.metric_labels["frame"].setText(str(data["frame"]))
         self.metric_labels["blink"].setText(str(data["blink"]))
         self.metric_labels["yawn"].setText(str(data["yawn"]))
         self.metric_labels["perclos"].setText(f"{data['perclos']:.1f}%")
@@ -746,11 +744,6 @@ class FatigueApp(QMainWindow):
         self.metric_labels["tilt"].setText({0: "Normal", 1: "Light", 2: "Heavy"}.get(data["tilt_state"], "N/A"))
         self.metric_labels["keys"].setText(f"{data['key_rate']:.1f}")
         self.metric_labels["clicks"].setText(f"{data['mouse_click_rate']:.1f}")
-        self.metric_labels["idle"].setText(f"{data['idle_sec']:.1f}s")
-        self.metric_labels["total_blinks"].setText(str(data["total_blinks"]))
-        self.metric_labels["total_yawns"].setText(str(data["total_yawns"]))
-        self.metric_labels["online_updates"].setText(str(data["online_updates"]))
-        self.metric_labels["queue"].setText(str(data["queue_depth"]))
 
         level = int(data["fatigue_level"])
         colors = {0: "#43c97a", 1: "#ffcb45", 2: "#ff5a5f"}
